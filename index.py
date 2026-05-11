@@ -109,7 +109,6 @@ def analyze(req: AnalyzeRequest):
     try:
         categories = get_categories(req.url)
         
-        # Format for frontend
         response_data = []
         for stype, items in categories.items():
             langs = sorted(set(item["lang"] for item in items))
