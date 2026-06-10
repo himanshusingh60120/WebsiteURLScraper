@@ -1,125 +1,125 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sitemap Scraper</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        input[type="text"] { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-        button { background: #2F5496; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 10px; }
-        button:hover { background: #1f3a6b; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
-        .checkbox-group { margin: 20px 0; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
-        label { display: block; margin-bottom: 8px; cursor: pointer; }
-        #status { margin-top: 15px; font-weight: bold; color: #333; text-align: center; }
-        .error { color: red; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sitemap Scraper</title>
+<style>
+body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
+.card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+input[type="text"] { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+button { background: #2F5496; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 10px; }
+button:hover { background: #1f3a6b; }
+button:disabled { background: #ccc; cursor: not-allowed; }
+.checkbox-group { margin: 20px 0; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
+label { display: block; margin-bottom: 8px; cursor: pointer; }
+.clean-option { margin: 12px 0; padding: 12px; background: #f0f4fb; border: 1px solid #d6e0f0; border-radius: 4px; }
+.clean-option small { display: block; color: #666; margin-top: 4px; font-size: 12px; }
+#status { margin-top: 15px; font-weight: bold; color: #333; text-align: center; }
+.error { color: red; }
+</style>
 </head>
 <body>
-
 <div class="card">
-    <h2>🔗 Sitemap Link Scraper</h2>
-    <p>Paste an XML sitemap URL to extract and categorize links into an Excel file.</p>
-    
-    <input type="text" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" />
-    <button id="analyzeBtn" onclick="analyzeSitemap()">Analyze Sitemap</button>
-
-    <div id="categoryContainer" style="display: none;">
-        <div class="checkbox-group" id="categoriesList"></div>
-        <button id="scrapeBtn" onclick="scrapeSitemap()">Scrape & Download Excel</button>
-    </div>
-
-    <div id="status"></div>
+<h2>🔗 Sitemap Link Scraper</h2>
+<p>Paste an XML sitemap URL to extract and categorize links into an Excel file.</p>
+<input type="text" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" />
+<button id="analyzeBtn" onclick="analyzeSitemap()">Analyze Sitemap</button>
+<div id="categoryContainer" style="display: none;">
+<div class="checkbox-group" id="categoriesList"></div>
+<div class="clean-option">
+<label>
+<input type="checkbox" id="cleanKeyword" checked>
+🧹 Clean URLs into a Keyword column
+</label>
+<small>Adds a <b>Keyword</b> column next to <b>URL</b>, derived from the last part of each URL in Title Case (e.g. <code>.../plywood-market-3073</code> → <b>Plywood Market</b>).</small>
+</div>
+<button id="scrapeBtn" onclick="scrapeSitemap()">Scrape & Download Excel</button>
+</div>
+<div id="status"></div>
 </div>
 
 <script>
-    async function analyzeSitemap() {
-        const url = document.getElementById('sitemapUrl').value;
-        const statusEl = document.getElementById('status');
-        const analyzeBtn = document.getElementById('analyzeBtn');
-        const container = document.getElementById('categoryContainer');
-        const list = document.getElementById('categoriesList');
+async function analyzeSitemap() {
+    const url = document.getElementById('sitemapUrl').value;
+    const statusEl = document.getElementById('status');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const container = document.getElementById('categoryContainer');
+    const list = document.getElementById('categoriesList');
 
-        if (!url) return alert("Please enter a URL");
+    if (!url) return alert("Please enter a URL");
 
-        statusEl.innerHTML = "⏳ Fetching sitemap...";
-        analyzeBtn.disabled = true;
-        container.style.display = "none";
-        list.innerHTML = "";
+    statusEl.innerHTML = "⏳ Fetching sitemap...";
+    analyzeBtn.disabled = true;
+    container.style.display = "none";
+    list.innerHTML = "";
 
-        try {
-            const res = await fetch('/api/analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url })
-            });
+    try {
+        const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: url })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to fetch");
 
+        data.categories.forEach(cat => {
+            list.innerHTML += `
+                <label>
+                    <input type="checkbox" value="${cat.type}" checked>
+                    <b>${cat.type}</b> - ${cat.count} sitemaps (${cat.langs})
+                </label>
+            `;
+        });
+        container.style.display = "block";
+        statusEl.innerHTML = `✅ Found ${data.categories.length} categories!`;
+    } catch (error) {
+        statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+    } finally {
+        analyzeBtn.disabled = false;
+    }
+}
+
+async function scrapeSitemap() {
+    const url = document.getElementById('sitemapUrl').value;
+    const statusEl = document.getElementById('status');
+    const scrapeBtn = document.getElementById('scrapeBtn');
+    const checkedBoxes = document.querySelectorAll('#categoriesList input:checked');
+    const selectedCategories = Array.from(checkedBoxes).map(cb => cb.value);
+    const clean = document.getElementById('cleanKeyword').checked;
+
+    if (selectedCategories.length === 0) return alert("Select at least one category");
+
+    statusEl.innerHTML = "⏳ Scraping URLs... This might take a minute.";
+    scrapeBtn.disabled = true;
+
+    try {
+        const res = await fetch('/api/scrape', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: url, categories: selectedCategories, clean: clean })
+        });
+
+        if (!res.ok) {
             const data = await res.json();
-            
-            if (!res.ok) throw new Error(data.detail || "Failed to fetch");
-
-            data.categories.forEach(cat => {
-                list.innerHTML += `
-                    <label>
-                        <input type="checkbox" value="${cat.type}" checked> 
-                        <b>${cat.type}</b> - ${cat.count} sitemaps (${cat.langs})
-                    </label>
-                `;
-            });
-
-            container.style.display = "block";
-            statusEl.innerHTML = `✅ Found ${data.categories.length} categories!`;
-        } catch (error) {
-            statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
-        } finally {
-            analyzeBtn.disabled = false;
+            throw new Error(data.detail || "Scraping failed");
         }
+
+        const blob = await res.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = "sitemap_links.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        statusEl.innerHTML = "✅ Excel file downloaded successfully!";
+    } catch (error) {
+        statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+    } finally {
+        scrapeBtn.disabled = false;
     }
-
-    async function scrapeSitemap() {
-        const url = document.getElementById('sitemapUrl').value;
-        const statusEl = document.getElementById('status');
-        const scrapeBtn = document.getElementById('scrapeBtn');
-        
-        const checkedBoxes = document.querySelectorAll('#categoriesList input:checked');
-        const selectedCategories = Array.from(checkedBoxes).map(cb => cb.value);
-
-        if (selectedCategories.length === 0) return alert("Select at least one category");
-
-        statusEl.innerHTML = "⏳ Scraping URLs... This might take a minute.";
-        scrapeBtn.disabled = true;
-
-        try {
-            const res = await fetch('/api/scrape', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url, categories: selectedCategories })
-            });
-
-            if (!res.ok) {
-                const data = await res.json();
-                throw new Error(data.detail || "Scraping failed");
-            }
-
-            const blob = await res.blob();
-            const downloadUrl = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = "sitemap_links.xlsx";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-
-            statusEl.innerHTML = "✅ Excel file downloaded successfully!";
-        } catch (error) {
-            statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
-        } finally {
-            scrapeBtn.disabled = false;
-        }
-    }
+}
 </script>
-
 </body>
 </html>
