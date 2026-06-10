@@ -13,18 +13,23 @@ app = FastAPI()
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SitemapScraper/1.0)"}
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+
 LANG_NAMES = {
     "en": "English", "fr": "French", "de": "German", "es": "Spanish",
     "zh": "Chinese", "ko": "Korean", "pt": "Portuguese", "ru": "Russian",
     "tr": "Turkish", "ja": "Japanese", "it": "Italian", "nl": "Dutch"
 }
 
+
 class AnalyzeRequest(BaseModel):
     url: str
+
 
 class ScrapeRequest(BaseModel):
     url: str
     categories: list[str]
+    clean: bool = True
+
 
 def fetch_sitemap(url):
     resp = requests.get(url, headers=HEADERS, timeout=30)
@@ -35,6 +40,7 @@ def fetch_sitemap(url):
         content = gzip.decompress(content)
     return content
 
+
 def guess_type(url):
     filename = url.rstrip("/").split("/")[-1]
     match = re.match(r"sitemap[_-]?(.+)\.xml", filename, re.IGNORECASE)
@@ -43,10 +49,31 @@ def guess_type(url):
         return raw.replace("-", " ").replace("_", " ").title()
     return filename
 
+
 def guess_lang(url):
     path = urlparse(url).path
     lang_match = re.match(r"^/([a-z]{2})/", path)
     return lang_match.group(1) if lang_match else "en"
+
+
+def url_to_keyword(url):
+    """Turn a URL into a clean Title Case keyword from its last path segment.
+
+    Example:
+        https://www.kingsresearch.com/report/plywood-market-3073
+        -> "Plywood Market"
+    """
+    # last non-empty path segment
+    slug = urlparse(url).path.rstrip("/").split("/")[-1]
+    # drop file extension if any (.html, .php, .aspx, etc.)
+    slug = re.sub(r"\.[a-z0-9]+$", "", slug, flags=re.IGNORECASE)
+    # remove trailing numeric id like -3073 or _3073
+    slug = re.sub(r"[-_]?\d+$", "", slug)
+    # separators -> words, collapse empties, title case
+    words = re.split(r"[-_]+", slug)
+    keyword = " ".join(w for w in words if w).title()
+    return keyword
+
 
 def extract_urls(url):
     content = fetch_sitemap(url)
@@ -57,41 +84,56 @@ def extract_urls(url):
         lastmod = u.find("sm:lastmod", NS)
         changefreq = u.find("sm:changefreq", NS)
         priority = u.find("sm:priority", NS)
+        loc_text = loc.text.strip() if loc is not None else ""
         entries.append({
-            "URL": loc.text.strip() if loc is not None else "",
+            "URL": loc_text,
+            "Keyword": url_to_keyword(loc_text),
             "Last Modified": lastmod.text.strip() if lastmod is not None else "",
             "Change Freq": changefreq.text.strip() if changefreq is not None else "",
             "Priority": priority.text.strip() if priority is not None else "",
         })
     return entries
 
-def add_sheet(wb, name, rows):
+
+def add_sheet(wb, name, rows, clean=True):
     HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=11)
     HEADER_FILL = PatternFill("solid", fgColor="2F5496")
     HEADER_ALIGN = Alignment(horizontal="center", vertical="center")
     CELL_FONT = Font(name="Arial", size=10)
     THIN_BORDER = Border(bottom=Side(style="thin", color="D9D9D9"))
-    HDR = ["URL", "Last Modified", "Change Freq", "Priority"]
+
+    if clean:
+        HDR = ["URL", "Keyword", "Last Modified", "Change Freq", "Priority"]
+        widths = {"A": 70, "B": 30, "C": 22, "D": 14, "E": 10}
+        last_col = "E"
+    else:
+        HDR = ["URL", "Last Modified", "Change Freq", "Priority"]
+        widths = {"A": 80, "B": 22, "C": 14, "D": 10}
+        last_col = "D"
 
     name = name[:31]
     ws = wb.create_sheet(title=name)
+
     for ci, h in enumerate(HDR, 1):
         c = ws.cell(row=1, column=ci, value=h)
         c.font, c.fill, c.alignment = HEADER_FONT, HEADER_FILL, HEADER_ALIGN
+
     for ri, row in enumerate(rows, 2):
         for ci, key in enumerate(HDR, 1):
             c = ws.cell(row=ri, column=ci, value=row.get(key, ""))
             c.font, c.border = CELL_FONT, THIN_BORDER
-    for col, w in {"A": 80, "B": 22, "C": 14, "D": 10}.items():
+
+    for col, w in widths.items():
         ws.column_dimensions[col].width = w
+
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:D{len(rows) + 1}"
+    ws.auto_filter.ref = f"A1:{last_col}{len(rows) + 1}"
+
 
 def get_categories(sitemap_url):
     content = fetch_sitemap(sitemap_url)
     index_tree = etree.fromstring(content)
     root_tag = etree.QName(index_tree.tag).localname
-
     if root_tag == "sitemapindex":
         child_locs = [loc.text.strip() for loc in index_tree.findall("sm:sitemap/sm:loc", NS)]
     else:
@@ -104,11 +146,11 @@ def get_categories(sitemap_url):
         categories.setdefault(stype, []).append({"url": child_url, "lang": lang})
     return categories
 
+
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
     try:
         categories = get_categories(req.url)
-        
         response_data = []
         for stype, items in categories.items():
             langs = sorted(set(item["lang"] for item in items))
@@ -122,12 +164,12 @@ def analyze(req: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.post("/api/scrape")
 def scrape(req: ScrapeRequest):
     try:
         all_categories = get_categories(req.url)
         scraped_data = {}
-        
         for stype in req.categories:
             if stype in all_categories:
                 for item in all_categories[stype]:
@@ -143,7 +185,7 @@ def scrape(req: ScrapeRequest):
             for lang in langs:
                 lang_label = LANG_NAMES.get(lang, lang.upper())
                 sheet_name = stype if len(langs) == 1 and lang == "en" else f"{stype} - {lang_label}"
-                add_sheet(wb, sheet_name, scraped_data[(stype, lang)])
+                add_sheet(wb, sheet_name, scraped_data[(stype, lang)], clean=req.clean)
 
         output = BytesIO()
         wb.save(output)
