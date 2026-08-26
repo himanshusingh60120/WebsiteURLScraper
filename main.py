@@ -25,17 +25,19 @@ PAGE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-ROBOTS_WORKERS = 12          # parallel page fetches
-ROBOTS_TIMEOUT = 10          # seconds per page
-MAX_HTML_BYTES = 250_000     # stop downloading a page after this much HTML
+# Per-batch settings. One /api/robots call must finish well inside the
+# hosting timeout: worst case is (batch_size / ROBOTS_WORKERS) * ROBOTS_TIMEOUT.
+# At 80 URLs / 20 workers / 8s that is ~32s worst case, ~4s typical.
+ROBOTS_WORKERS = 20
+ROBOTS_TIMEOUT = 8
+MAX_BATCH = 150              # hard cap on URLs per /api/robots call
+MAX_HTML_BYTES = 250_000
 SKIP_TYPES = ("image/", "video/", "audio/", "font/",
               "application/pdf", "application/zip")
 
-# Each URL costs one HTTP request, so a 19k-URL sitemap cannot be checked
-# inside a single serverless request at any timeout setting. This caps the
-# work per sheet; the remainder is marked "Not checked (limit reached)".
-# Lower it if you get a 504. For a complete run use scripts/add_robots_column.py.
-ROBOTS_LIMIT_DEFAULT = 300
+# A single JSON response must stay under the platform's ~4.5MB body limit.
+# 19.6k rows is ~5.8MB, so /api/urls is paginated.
+MAX_PAGE = 6000
 
 LANG_NAMES = {
     "en": "English", "fr": "French", "de": "German", "es": "Spanish",
@@ -48,11 +50,21 @@ class AnalyzeRequest(BaseModel):
     url: str
 
 
-class ScrapeRequest(BaseModel):
+class SheetsRequest(BaseModel):
     url: str
     categories: list[str]
-    check_robots: bool = True
-    robots_limit: int = ROBOTS_LIMIT_DEFAULT
+
+
+class UrlsRequest(BaseModel):
+    url: str
+    type: str
+    lang: str = "en"
+    offset: int = 0
+    limit: int = MAX_PAGE
+
+
+class RobotsRequest(BaseModel):
+    urls: list[str]
 
 
 # --------------------------------------------------------------- sitemap I/O
@@ -99,11 +111,11 @@ def extract_urls(url):
         priority = u.find("sm:priority", NS)
         page_url = loc.text.strip() if loc is not None else ""
         entries.append({
-            "URL": page_url,
-            "Keyword": guess_keyword(page_url) if page_url else "",
-            "Last Modified": lastmod.text.strip() if lastmod is not None else "",
-            "Change Freq": changefreq.text.strip() if changefreq is not None else "",
-            "Priority": priority.text.strip() if priority is not None else "",
+            "url": page_url,
+            "keyword": guess_keyword(page_url) if page_url else "",
+            "lastmod": lastmod.text.strip() if lastmod is not None else "",
+            "changefreq": changefreq.text.strip() if changefreq is not None else "",
+            "priority": priority.text.strip() if priority is not None else "",
         })
     return entries
 
@@ -127,14 +139,27 @@ def get_categories(sitemap_url):
     return categories
 
 
+def sheet_children(sitemap_url, stype, lang):
+    """Child sitemap URLs making up one sheet, in a stable order."""
+    cats = get_categories(sitemap_url)
+    return sorted(i["url"] for i in cats.get(stype, []) if i["lang"] == lang)
+
+
+def sheet_rows(sitemap_url, stype, lang):
+    rows = []
+    for child in sheet_children(sitemap_url, stype, lang):
+        rows.extend(extract_urls(child))
+    return rows
+
+
 # ================================================================
 # ROBOTS DIRECTIVE EXTRACTION
 #
-# NOTE: the two patterns below are built by concatenating LT ("<")
-# rather than written as literal tags. If this file is ever copied
-# out of a web browser that rendered it as HTML, a literal tag would
-# be silently swallowed and robots detection would return "Not set"
-# for every URL with no error. Keep it written this way.
+# The two patterns below are built by concatenating LT ("<") rather
+# than written as literal tags. If this file is ever copied out of a
+# browser that rendered it as HTML, a literal tag would be silently
+# swallowed and every URL would report "Not set" with no error.
+# Keep it written this way.
 # ================================================================
 
 LT = "<"
@@ -157,7 +182,6 @@ def parse_meta_robots(html):
 
 
 def fetch_robots_directive(session, url):
-    """Raw robots directive for a single URL."""
     try:
         resp = session.get(url, headers=PAGE_HEADERS, timeout=ROBOTS_TIMEOUT,
                            stream=True, allow_redirects=True)
@@ -172,8 +196,6 @@ def fetch_robots_directive(session, url):
 
         meta_val = ""
         ctype = resp.headers.get("Content-Type", "").lower()
-        # Parse unless the type is clearly non-HTML. Gating on `"html" in ctype`
-        # would silently report "Not set" for servers sending a generic type.
         if not any(t in ctype for t in SKIP_TYPES):
             size, chunks = 0, []
             for chunk in resp.iter_content(8192):
@@ -197,7 +219,6 @@ def fetch_robots_directive(session, url):
 
 
 def derive_status(directive):
-    """(Index Status, Follow Status) from a raw directive string."""
     d = (directive or "").lower()
     if d.startswith(("http ", "error", "not checked")):
         return "Unknown", "Unknown"
@@ -209,18 +230,8 @@ def derive_status(directive):
     return index, follow
 
 
-def annotate_robots(rows, limit=ROBOTS_LIMIT_DEFAULT):
-    """Fill Robots / Index Status / Follow Status on each row, in parallel."""
-    targets = rows[:limit] if limit and limit > 0 else rows
-
-    for row in rows[len(targets):]:
-        row["Robots"] = "Not checked (limit reached)"
-        row["Index Status"] = "Unknown"
-        row["Follow Status"] = "Unknown"
-
-    if not targets:
-        return rows
-
+def check_batch(urls):
+    """Directive for each URL in one batch, fetched in parallel."""
     session = requests.Session()
     adapter = requests.adapters.HTTPAdapter(
         pool_connections=ROBOTS_WORKERS, pool_maxsize=ROBOTS_WORKERS, max_retries=0
@@ -228,69 +239,20 @@ def annotate_robots(rows, limit=ROBOTS_LIMIT_DEFAULT):
     session.mount("http://", adapter)
     session.mount("https://", adapter)
 
+    out = {}
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=ROBOTS_WORKERS) as ex:
-            futures = {
-                ex.submit(fetch_robots_directive, session, r["URL"]): r
-                for r in targets if r.get("URL")
-            }
+            futures = {ex.submit(fetch_robots_directive, session, u): u
+                       for u in urls if u}
             for fut in concurrent.futures.as_completed(futures):
-                row = futures[fut]
+                u = futures[fut]
                 try:
-                    directive = fut.result()
+                    out[u] = fut.result()
                 except Exception as e:
-                    directive = f"Error: {type(e).__name__}"
-                row["Robots"] = directive
-                row["Index Status"], row["Follow Status"] = derive_status(directive)
+                    out[u] = f"Error: {type(e).__name__}"
     finally:
         session.close()
-
-    return rows
-
-
-# --------------------------------------------------------------- excel output
-
-HDR = ["URL", "Robots", "Index Status", "Follow Status", "Keyword",
-       "Last Modified", "Change Freq", "Priority"]
-COL_WIDTHS = [80, 30, 16, 16, 45, 22, 14, 10]
-
-
-def add_sheet(wb, name, rows):
-    HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-    HEADER_FILL = PatternFill("solid", fgColor="2F5496")
-    HEADER_ALIGN = Alignment(horizontal="center", vertical="center")
-    CELL_FONT = Font(name="Arial", size=10)
-    BAD_FONT = Font(name="Arial", size=10, color="C00000", bold=True)
-    WARN_FONT = Font(name="Arial", size=10, color="808080", italic=True)
-    THIN_BORDER = Border(bottom=Side(style="thin", color="D9D9D9"))
-
-    ws = wb.create_sheet(title=name[:31])
-
-    for ci, h in enumerate(HDR, 1):
-        c = ws.cell(row=1, column=ci, value=h)
-        c.font, c.fill, c.alignment = HEADER_FONT, HEADER_FILL, HEADER_ALIGN
-
-    for ri, row in enumerate(rows, 2):
-        for ci, key in enumerate(HDR, 1):
-            val = row.get(key, "")
-            c = ws.cell(row=ri, column=ci, value=val)
-            c.border = THIN_BORDER
-            if key in ("Robots", "Index Status", "Follow Status"):
-                low = str(val).lower()
-                if "nofollow" in low or "noindex" in low or re.search(r"\bnone\b", low):
-                    c.font = BAD_FONT
-                elif low.startswith(("error", "http ", "unknown", "not checked")):
-                    c.font = WARN_FONT
-                else:
-                    c.font = CELL_FONT
-            else:
-                c.font = CELL_FONT
-
-    for i, w in enumerate(COL_WIDTHS, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(HDR))}{len(rows) + 1}"
+    return out
 
 
 # --------------------------------------------------------------- endpoints
@@ -299,55 +261,61 @@ def add_sheet(wb, name, rows):
 def analyze(req: AnalyzeRequest):
     try:
         categories = get_categories(req.url)
-        response_data = []
+        data = []
         for stype, items in categories.items():
-            langs = sorted(set(item["lang"] for item in items))
-            lang_labels = ", ".join(LANG_NAMES.get(l, l.upper()) for l in langs)
-            response_data.append({
+            langs = sorted(set(i["lang"] for i in items))
+            data.append({
                 "type": stype,
                 "count": len(items),
-                "langs": lang_labels,
+                "langs": ", ".join(LANG_NAMES.get(l, l.upper()) for l in langs),
             })
-        return {"categories": response_data}
+        return {"categories": data}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/scrape")
-def scrape(req: ScrapeRequest):
+@app.post("/api/sheets")
+def sheets(req: SheetsRequest):
+    """One entry per output sheet, with its total row count."""
     try:
-        all_categories = get_categories(req.url)
-        scraped_data = {}
-
+        cats = get_categories(req.url)
+        out = []
         for stype in req.categories:
-            if stype in all_categories:
-                for item in all_categories[stype]:
-                    urls = extract_urls(item["url"])
-                    if req.check_robots:
-                        annotate_robots(urls, limit=req.robots_limit)
-                    scraped_data[(stype, item["lang"])] = urls
-
-        wb = Workbook()
-        wb.remove(wb.active)
-
-        for stype in sorted(set(t for t, l in scraped_data.keys())):
-            langs = sorted([l for (t, l) in scraped_data if t == stype])
+            if stype not in cats:
+                continue
+            langs = sorted(set(i["lang"] for i in cats[stype]))
             for lang in langs:
-                lang_label = LANG_NAMES.get(lang, lang.upper())
-                sheet_name = stype if len(langs) == 1 and lang == "en" \
-                    else f"{stype} - {lang_label}"
-                add_sheet(wb, sheet_name, scraped_data[(stype, lang)])
+                total = sum(len(extract_urls(c))
+                            for c in sheet_children(req.url, stype, lang))
+                label = LANG_NAMES.get(lang, lang.upper())
+                name = stype if len(langs) == 1 and lang == "en" \
+                    else f"{stype} - {label}"
+                out.append({"name": name[:31], "type": stype,
+                            "lang": lang, "total": total})
+        return {"sheets": out}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        if not wb.sheetnames:
-            raise ValueError("No URLs found for the selected categories.")
 
-        output = BytesIO()
-        wb.save(output)
+@app.post("/api/urls")
+def urls(req: UrlsRequest):
+    """One page of rows for a sheet."""
+    try:
+        limit = max(1, min(req.limit, MAX_PAGE))
+        rows = sheet_rows(req.url, req.type, req.lang)
+        return {"rows": rows[req.offset:req.offset + limit],
+                "total": len(rows), "offset": req.offset}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        return Response(
-            content=output.getvalue(),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=sitemap_links.xlsx"},
-        )
+
+@app.post("/api/robots")
+def robots(req: RobotsRequest):
+    """Robots directive for a batch of URLs."""
+    try:
+        batch = req.urls[:MAX_BATCH]
+        if not batch:
+            return {"results": {}}
+        return {"results": check_batch(batch)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
