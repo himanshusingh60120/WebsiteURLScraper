@@ -16,7 +16,6 @@ app = FastAPI()
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SitemapScraper/1.0)"}
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
-# ---------------------------------------------------------------- robots cfg
 PAGE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -25,23 +24,23 @@ PAGE_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
 ROBOTS_WORKERS = 12          # parallel page fetches
 ROBOTS_TIMEOUT = 10          # seconds per page
 MAX_HTML_BYTES = 250_000     # stop downloading a page after this much HTML
-SKIP_TYPES = ("image/", "video/", "audio/", "font/", "application/pdf",
-              "application/zip")
+SKIP_TYPES = ("image/", "video/", "audio/", "font/",
+              "application/pdf", "application/zip")
 
-# Serverless functions have a hard execution-time wall. Each URL is one HTTP
-# request, so a 19k-URL sitemap cannot be checked inside a single request no
-# matter how high maxDuration goes. This caps the work per sheet; anything
-# beyond it is written as "Not checked (limit reached)". For a full run, use
-# the standalone add_robots_column.py script instead.
+# Each URL costs one HTTP request, so a 19k-URL sitemap cannot be checked
+# inside a single serverless request at any timeout setting. This caps the
+# work per sheet; the remainder is marked "Not checked (limit reached)".
+# Lower it if you get a 504. For a complete run use scripts/add_robots_column.py.
 ROBOTS_LIMIT_DEFAULT = 300
 
 LANG_NAMES = {
     "en": "English", "fr": "French", "de": "German", "es": "Spanish",
     "zh": "Chinese", "ko": "Korean", "pt": "Portuguese", "ru": "Russian",
-    "tr": "Turkish", "ja": "Japanese", "it": "Italian", "nl": "Dutch"
+    "tr": "Turkish", "ja": "Japanese", "it": "Italian", "nl": "Dutch",
 }
 
 
@@ -55,6 +54,8 @@ class ScrapeRequest(BaseModel):
     check_robots: bool = True
     robots_limit: int = ROBOTS_LIMIT_DEFAULT
 
+
+# --------------------------------------------------------------- sitemap I/O
 
 def fetch_sitemap(url):
     resp = requests.get(url, headers=HEADERS, timeout=30)
@@ -107,16 +108,43 @@ def extract_urls(url):
     return entries
 
 
-# =========================================================================
-# ROBOTS DIRECTIVE EXTRACTION
-# =========================================================================
+def get_categories(sitemap_url):
+    content = fetch_sitemap(sitemap_url)
+    index_tree = etree.fromstring(content)
+    root_tag = etree.QName(index_tree.tag).localname
 
-META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+    if root_tag == "sitemapindex":
+        child_locs = [loc.text.strip()
+                      for loc in index_tree.findall("sm:sitemap/sm:loc", NS)]
+    else:
+        child_locs = [sitemap_url]
+
+    categories = {}
+    for child_url in child_locs:
+        stype = guess_type(child_url)
+        lang = guess_lang(child_url)
+        categories.setdefault(stype, []).append({"url": child_url, "lang": lang})
+    return categories
+
+
+# ================================================================
+# ROBOTS DIRECTIVE EXTRACTION
+#
+# NOTE: the two patterns below are built by concatenating LT ("<")
+# rather than written as literal tags. If this file is ever copied
+# out of a web browser that rendered it as HTML, a literal tag would
+# be silently swallowed and robots detection would return "Not set"
+# for every URL with no error. Keep it written this way.
+# ================================================================
+
+LT = "<"
+META_TAG_RE = re.compile(LT + r"meta\b[^>]*>", re.IGNORECASE)
+HEAD_END_RE = re.compile(LT + r"/head\s*>", re.IGNORECASE)
 ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
 
 
 def parse_meta_robots(html):
-    """Content of <meta name="robots">, falling back to name="googlebot"."""
+    """Content of the robots meta tag, falling back to the googlebot one."""
     found = {}
     for tag in META_TAG_RE.finditer(html):
         attrs = {}
@@ -144,9 +172,8 @@ def fetch_robots_directive(session, url):
 
         meta_val = ""
         ctype = resp.headers.get("Content-Type", "").lower()
-        # Parse unless the type is clearly non-HTML. Skipping on anything that
-        # merely fails a "html in ctype" test silently reports "Not set" for
-        # servers that send an unusual or generic Content-Type.
+        # Parse unless the type is clearly non-HTML. Gating on `"html" in ctype`
+        # would silently report "Not set" for servers sending a generic type.
         if not any(t in ctype for t in SKIP_TYPES):
             size, chunks = 0, []
             for chunk in resp.iter_content(8192):
@@ -155,7 +182,7 @@ def fetch_robots_directive(session, url):
                 if size >= MAX_HTML_BYTES:
                     break
             html = b"".join(chunks).decode("utf-8", errors="ignore")
-            head = re.split(r"</head\s*>", html, maxsplit=1, flags=re.IGNORECASE)[0]
+            head = HEAD_END_RE.split(html, maxsplit=1)[0]
             meta_val = parse_meta_robots(head)
     finally:
         resp.close()
@@ -221,15 +248,11 @@ def annotate_robots(rows, limit=ROBOTS_LIMIT_DEFAULT):
     return rows
 
 
-# =========================================================================
-# EXCEL OUTPUT
-# =========================================================================
+# --------------------------------------------------------------- excel output
 
-# Add "Index Status" here (and a width below) to also surface Index/Noindex —
-# the value is already computed on every row.
-HDR = ["URL", "Robots", "Follow Status", "Keyword",
+HDR = ["URL", "Robots", "Index Status", "Follow Status", "Keyword",
        "Last Modified", "Change Freq", "Priority"]
-COL_WIDTHS = [80, 30, 14, 45, 22, 14, 10]
+COL_WIDTHS = [80, 30, 16, 16, 45, 22, 14, 10]
 
 
 def add_sheet(wb, name, rows):
@@ -241,8 +264,7 @@ def add_sheet(wb, name, rows):
     WARN_FONT = Font(name="Arial", size=10, color="808080", italic=True)
     THIN_BORDER = Border(bottom=Side(style="thin", color="D9D9D9"))
 
-    name = name[:31]
-    ws = wb.create_sheet(title=name)
+    ws = wb.create_sheet(title=name[:31])
 
     for ci, h in enumerate(HDR, 1):
         c = ws.cell(row=1, column=ci, value=h)
@@ -267,28 +289,11 @@ def add_sheet(wb, name, rows):
     for i, w in enumerate(COL_WIDTHS, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    last_col = get_column_letter(len(HDR))
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{last_col}{len(rows) + 1}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(HDR))}{len(rows) + 1}"
 
 
-def get_categories(sitemap_url):
-    content = fetch_sitemap(sitemap_url)
-    index_tree = etree.fromstring(content)
-    root_tag = etree.QName(index_tree.tag).localname
-
-    if root_tag == "sitemapindex":
-        child_locs = [loc.text.strip() for loc in index_tree.findall("sm:sitemap/sm:loc", NS)]
-    else:
-        child_locs = [sitemap_url]
-
-    categories = {}
-    for child_url in child_locs:
-        stype = guess_type(child_url)
-        lang = guess_lang(child_url)
-        categories.setdefault(stype, []).append({"url": child_url, "lang": lang})
-    return categories
-
+# --------------------------------------------------------------- endpoints
 
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
@@ -301,7 +306,7 @@ def analyze(req: AnalyzeRequest):
             response_data.append({
                 "type": stype,
                 "count": len(items),
-                "langs": lang_labels
+                "langs": lang_labels,
             })
         return {"categories": response_data}
     except Exception as e:
@@ -325,22 +330,24 @@ def scrape(req: ScrapeRequest):
         wb = Workbook()
         wb.remove(wb.active)
 
-        types_in_data = sorted(set(t for t, l in scraped_data.keys()))
-        for stype in types_in_data:
+        for stype in sorted(set(t for t, l in scraped_data.keys())):
             langs = sorted([l for (t, l) in scraped_data if t == stype])
             for lang in langs:
                 lang_label = LANG_NAMES.get(lang, lang.upper())
-                sheet_name = stype if len(langs) == 1 and lang == "en" else f"{stype} - {lang_label}"
+                sheet_name = stype if len(langs) == 1 and lang == "en" \
+                    else f"{stype} - {lang_label}"
                 add_sheet(wb, sheet_name, scraped_data[(stype, lang)])
+
+        if not wb.sheetnames:
+            raise ValueError("No URLs found for the selected categories.")
 
         output = BytesIO()
         wb.save(output)
-        excel_data = output.getvalue()
 
         return Response(
-            content=excel_data,
+            content=output.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=sitemap_links.xlsx"}
+            headers={"Content-Disposition": "attachment; filename=sitemap_links.xlsx"},
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
