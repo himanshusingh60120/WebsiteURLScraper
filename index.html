@@ -1,346 +1,291 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
-from pydantic import BaseModel
-import requests
-import re
-import concurrent.futures
-from lxml import etree
-from urllib.parse import urlparse
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-from io import BytesIO
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sitemap Crawl Audit</title>
+<style>
+  :root{
+    --paper:#F4F6F8;
+    --card:#FFFFFF;
+    --ink:#14212B;
+    --ink-soft:#5A6B78;
+    --rule:#D8DFE5;
+    --teal:#0B5F6B;
+    --teal-dim:#0E7482;
+    --flag:#B3261E;
+    --amber:#8A6D00;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);line-height:1.5;
+    padding:40px 20px 80px;
+  }
+  .wrap{max-width:840px;margin:0 auto}
 
-app = FastAPI()
+  header{border-bottom:2px solid var(--ink);padding-bottom:18px;margin-bottom:32px}
+  h1{
+    margin:0;font-size:30px;font-weight:650;letter-spacing:-0.025em;
+  }
+  .sub{margin:6px 0 0;color:var(--ink-soft);font-size:14px}
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SitemapScraper/1.0)"}
-NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+  .card{
+    background:var(--card);border:1px solid var(--rule);
+    border-radius:6px;padding:22px;margin-bottom:20px;
+  }
+  label.fld{display:block;font-size:12px;font-weight:600;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--ink-soft);margin-bottom:8px}
 
-# ---------------------------------------------------------------- robots cfg
-PAGE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-ROBOTS_WORKERS = 12          # parallel page fetches
-ROBOTS_TIMEOUT = 10          # seconds per page
-MAX_HTML_BYTES = 250_000     # stop downloading a page after this much HTML
-SKIP_TYPES = ("image/", "video/", "audio/", "font/", "application/pdf",
-              "application/zip")
+  input[type=url],input[type=number]{
+    width:100%;padding:11px 13px;border:1px solid var(--rule);border-radius:4px;
+    font-family:var(--mono);font-size:14px;color:var(--ink);background:#fff;
+  }
+  input:focus{outline:2px solid var(--teal);outline-offset:1px;border-color:var(--teal)}
 
-# Serverless functions have a hard execution-time wall. Each URL is one HTTP
-# request, so a 19k-URL sitemap cannot be checked inside a single request no
-# matter how high maxDuration goes. This caps the work per sheet; anything
-# beyond it is written as "Not checked (limit reached)". For a full run, use
-# the standalone add_robots_column.py script instead.
-ROBOTS_LIMIT_DEFAULT = 300
+  button{
+    font-family:var(--sans);font-size:14px;font-weight:600;cursor:pointer;
+    border-radius:4px;padding:11px 20px;border:1px solid transparent;
+  }
+  .primary{background:var(--teal);color:#fff}
+  .primary:hover:not(:disabled){background:var(--teal-dim)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .row{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center}
 
-LANG_NAMES = {
-    "en": "English", "fr": "French", "de": "German", "es": "Spanish",
-    "zh": "Chinese", "ko": "Korean", "pt": "Portuguese", "ru": "Russian",
-    "tr": "Turkish", "ja": "Japanese", "it": "Italian", "nl": "Dutch"
-}
+  .manifest{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+  .manifest li{
+    display:flex;align-items:center;gap:12px;
+    padding:11px 2px;border-bottom:1px solid var(--rule);
+  }
+  .manifest input{width:16px;height:16px;accent-color:var(--teal);flex:none}
+  .mname{font-weight:600;font-size:14px}
+  .mmeta{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-soft);text-align:right}
 
+  .opt{display:flex;align-items:center;gap:9px;font-size:14px;margin-top:6px}
+  .opt input[type=checkbox]{width:16px;height:16px;accent-color:var(--teal)}
+  .hint{font-size:12.5px;color:var(--ink-soft);margin:7px 0 0}
+  .limitbox{max-width:150px}
 
-class AnalyzeRequest(BaseModel):
-    url: str
+  .note{
+    border-left:3px solid var(--amber);background:#FFFBEF;
+    padding:11px 14px;font-size:13px;margin-top:16px;border-radius:0 4px 4px 0;
+  }
+  .err{
+    border-left:3px solid var(--flag);background:#FDF2F1;
+    padding:11px 14px;font-size:13px;margin-top:16px;border-radius:0 4px 4px 0;
+    font-family:var(--mono);white-space:pre-wrap;word-break:break-word;
+  }
+  .status{font-family:var(--mono);font-size:13px;color:var(--ink-soft)}
+  .hidden{display:none}
 
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-size:12.5px}
+  .chip{display:inline-flex;align-items:center;gap:6px;color:var(--ink-soft)}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+</style>
+</head>
+<body>
+<div class="wrap">
 
-class ScrapeRequest(BaseModel):
-    url: str
-    categories: list[str]
-    check_robots: bool = True
-    robots_limit: int = ROBOTS_LIMIT_DEFAULT
+  <header>
+    <h1>Sitemap Crawl Audit</h1>
+    <p class="sub">Pull every URL from a sitemap and record its robots directive &mdash; index/noindex, follow/nofollow &mdash; into a spreadsheet.</p>
+  </header>
 
+  <div class="card">
+    <label class="fld" for="sitemap">Sitemap URL</label>
+    <input type="url" id="sitemap" placeholder="https://example.com/sitemap.xml" spellcheck="false">
+    <div class="row">
+      <button class="primary" id="analyzeBtn">Analyze sitemap</button>
+      <span class="status" id="analyzeStatus"></span>
+    </div>
+    <div id="analyzeErr" class="err hidden"></div>
+  </div>
 
-def fetch_sitemap(url):
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    content = resp.content
-    if url.endswith(".gz"):
-        import gzip
-        content = gzip.decompress(content)
-    return content
+  <div class="card hidden" id="resultCard">
+    <label class="fld">Sitemaps found</label>
+    <ul class="manifest" id="manifest"></ul>
 
+    <div class="row" style="margin-top:18px">
+      <button id="allBtn" style="background:#fff;border-color:var(--rule);color:var(--ink)">Select all</button>
+      <button id="noneBtn" style="background:#fff;border-color:var(--rule);color:var(--ink)">Clear</button>
+    </div>
 
-def guess_type(url):
-    filename = url.rstrip("/").split("/")[-1]
-    match = re.match(r"sitemap[_-]?(.+)\.xml", filename, re.IGNORECASE)
-    if match:
-        raw = match.group(1).strip("-_ ")
-        return raw.replace("-", " ").replace("_", " ").title()
-    return filename
+    <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--rule)">
+      <label class="fld">Robots check</label>
+      <div class="opt">
+        <input type="checkbox" id="checkRobots" checked>
+        <label for="checkRobots">Fetch each page and read its robots directive</label>
+      </div>
+      <p class="hint">Every URL costs one request. Turn this off for a fast URL-only export.</p>
 
+      <div style="margin-top:14px" class="limitbox">
+        <label class="fld" for="robotsLimit">Max URLs per sheet</label>
+        <input type="number" id="robotsLimit" value="300" min="1" max="5000">
+      </div>
+      <p class="hint">Rows past this are marked <em>Not checked</em>. Lower it if the download times out.</p>
 
-def guess_lang(url):
-    path = urlparse(url).path
-    lang_match = re.match(r"^/([a-z]{2})/", path)
-    return lang_match.group(1) if lang_match else "en"
+      <div class="note">
+        Hosting caps how long one request may run, so large sitemaps can&rsquo;t be
+        fully checked here. For a complete audit run
+        <code>scripts/add_robots_column.py</code> on your own machine.
+      </div>
+    </div>
 
+    <div class="row" style="margin-top:20px">
+      <button class="primary" id="scrapeBtn">Download Excel</button>
+      <span class="status" id="scrapeStatus"></span>
+    </div>
+    <div id="scrapeErr" class="err hidden"></div>
 
-def guess_keyword(url):
-    slug = urlparse(url).path.rstrip("/").split("/")[-1]
-    slug = re.sub(r"\d+$", "", slug)
-    return re.sub(r"[-_]+", " ", slug).title().strip()
+    <div class="legend">
+      <span class="chip"><span class="dot" style="background:var(--teal)"></span>Index, follow</span>
+      <span class="chip"><span class="dot" style="background:var(--flag)"></span>Noindex or nofollow</span>
+      <span class="chip"><span class="dot" style="background:#9AA7B1"></span>Unreachable / not checked</span>
+    </div>
+  </div>
 
+</div>
 
-def extract_urls(url):
-    content = fetch_sitemap(url)
-    tree = etree.fromstring(content)
-    entries = []
-    for u in tree.findall("sm:url", NS):
-        loc = u.find("sm:loc", NS)
-        lastmod = u.find("sm:lastmod", NS)
-        changefreq = u.find("sm:changefreq", NS)
-        priority = u.find("sm:priority", NS)
-        page_url = loc.text.strip() if loc is not None else ""
-        entries.append({
-            "URL": page_url,
-            "Keyword": guess_keyword(page_url) if page_url else "",
-            "Last Modified": lastmod.text.strip() if lastmod is not None else "",
-            "Change Freq": changefreq.text.strip() if changefreq is not None else "",
-            "Priority": priority.text.strip() if priority is not None else "",
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var categories = [];
+  var timer = null;
+
+  function showErr(el, msg){ el.textContent = msg; el.classList.remove('hidden'); }
+  function hideErr(el){ el.classList.add('hidden'); }
+
+  function startTimer(el, label){
+    var t0 = Date.now();
+    el.textContent = label + ' 0s';
+    timer = setInterval(function(){
+      el.textContent = label + ' ' + Math.round((Date.now()-t0)/1000) + 's';
+    }, 1000);
+  }
+  function stopTimer(){ if(timer){ clearInterval(timer); timer = null; } }
+
+  async function readError(res){
+    var msg = 'HTTP ' + res.status;
+    try {
+      var j = await res.json();
+      if (j && j.detail) msg += ' \u2014 ' + j.detail;
+    } catch (e) {}
+    return msg;
+  }
+
+  $('analyzeBtn').addEventListener('click', async function(){
+    var url = $('sitemap').value.trim();
+    hideErr($('analyzeErr'));
+    if(!url){ showErr($('analyzeErr'), 'Enter a sitemap URL first.'); return; }
+
+    this.disabled = true;
+    startTimer($('analyzeStatus'), 'Reading sitemap\u2026');
+    try{
+      var res = await fetch('/api/analyze', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ url: url })
+      });
+      if(!res.ok) throw new Error(await readError(res));
+      var data = await res.json();
+      categories = data.categories || [];
+      if(!categories.length) throw new Error('No sitemaps found at that URL.');
+      render();
+      $('analyzeStatus').textContent = categories.length + ' found';
+      $('resultCard').classList.remove('hidden');
+    }catch(err){
+      showErr($('analyzeErr'), err.message);
+      $('analyzeStatus').textContent = '';
+      $('resultCard').classList.add('hidden');
+    }finally{
+      stopTimer();
+      this.disabled = false;
+    }
+  });
+
+  function render(){
+    var ul = $('manifest');
+    ul.innerHTML = '';
+    categories.forEach(function(c, i){
+      var li = document.createElement('li');
+
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = true;
+      cb.id = 'cat' + i; cb.value = c.type;
+
+      var lab = document.createElement('label');
+      lab.className = 'mname'; lab.htmlFor = cb.id; lab.textContent = c.type;
+
+      var meta = document.createElement('span');
+      meta.className = 'mmeta';
+      meta.textContent = c.count + (c.count === 1 ? ' file' : ' files')
+                       + (c.langs ? '  \u00b7  ' + c.langs : '');
+
+      li.appendChild(cb); li.appendChild(lab); li.appendChild(meta);
+      ul.appendChild(li);
+    });
+  }
+
+  function setAll(v){
+    Array.prototype.forEach.call(
+      document.querySelectorAll('#manifest input[type=checkbox]'),
+      function(cb){ cb.checked = v; }
+    );
+  }
+  $('allBtn').addEventListener('click', function(){ setAll(true); });
+  $('noneBtn').addEventListener('click', function(){ setAll(false); });
+
+  $('scrapeBtn').addEventListener('click', async function(){
+    hideErr($('scrapeErr'));
+    var picked = Array.prototype.filter.call(
+      document.querySelectorAll('#manifest input[type=checkbox]'),
+      function(cb){ return cb.checked; }
+    ).map(function(cb){ return cb.value; });
+
+    if(!picked.length){ showErr($('scrapeErr'), 'Select at least one sitemap.'); return; }
+
+    this.disabled = true;
+    startTimer($('scrapeStatus'), 'Building spreadsheet\u2026');
+    try{
+      var res = await fetch('/api/scrape', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          url: $('sitemap').value.trim(),
+          categories: picked,
+          check_robots: $('checkRobots').checked,
+          robots_limit: parseInt($('robotsLimit').value, 10) || 300
         })
-    return entries
+      });
+      if(!res.ok) throw new Error(await readError(res));
 
+      var blob = await res.blob();
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'sitemap_links.xlsx';
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      $('scrapeStatus').textContent = 'Downloaded';
+    }catch(err){
+      var m = err.message;
+      if(/50[0-9]|Failed to fetch|NetworkError/i.test(m)){
+        m += '\n\nLikely a request timeout. Lower "Max URLs per sheet", '
+           + 'pick fewer sitemaps, or untick the robots check.';
+      }
+      showErr($('scrapeErr'), m);
+      $('scrapeStatus').textContent = '';
+    }finally{
+      stopTimer();
+      this.disabled = false;
+    }
+  });
 
-# =========================================================================
-# ROBOTS DIRECTIVE EXTRACTION
-# =========================================================================
-
-META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
-ATTR_RE = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
-
-
-def parse_meta_robots(html):
-    """Content of <meta name="robots">, falling back to name="googlebot"."""
-    found = {}
-    for tag in META_TAG_RE.finditer(html):
-        attrs = {}
-        for m in ATTR_RE.finditer(tag.group(0)):
-            attrs[m.group(1).lower()] = m.group(2) or m.group(3) or m.group(4) or ""
-        name = attrs.get("name", "").strip().lower()
-        if name in ("robots", "googlebot") and name not in found:
-            found[name] = attrs.get("content", "").strip()
-    return found.get("robots") or found.get("googlebot") or ""
-
-
-def fetch_robots_directive(session, url):
-    """Raw robots directive for a single URL."""
-    try:
-        resp = session.get(url, headers=PAGE_HEADERS, timeout=ROBOTS_TIMEOUT,
-                           stream=True, allow_redirects=True)
-    except requests.RequestException as e:
-        return f"Error: {type(e).__name__}"
-
-    try:
-        if resp.status_code != 200:
-            return f"HTTP {resp.status_code}"
-
-        header_val = resp.headers.get("X-Robots-Tag", "").strip()
-
-        meta_val = ""
-        ctype = resp.headers.get("Content-Type", "").lower()
-        # Parse unless the type is clearly non-HTML. Skipping on anything that
-        # merely fails a "html in ctype" test silently reports "Not set" for
-        # servers that send an unusual or generic Content-Type.
-        if not any(t in ctype for t in SKIP_TYPES):
-            size, chunks = 0, []
-            for chunk in resp.iter_content(8192):
-                chunks.append(chunk)
-                size += len(chunk)
-                if size >= MAX_HTML_BYTES:
-                    break
-            html = b"".join(chunks).decode("utf-8", errors="ignore")
-            head = re.split(r"</head\s*>", html, maxsplit=1, flags=re.IGNORECASE)[0]
-            meta_val = parse_meta_robots(head)
-    finally:
-        resp.close()
-
-    if meta_val and header_val:
-        return f"{meta_val} (X-Robots-Tag: {header_val})"
-    if meta_val:
-        return meta_val
-    if header_val:
-        return f"X-Robots-Tag: {header_val}"
-    return "Not set"
-
-
-def derive_status(directive):
-    """(Index Status, Follow Status) from a raw directive string."""
-    d = (directive or "").lower()
-    if d.startswith(("http ", "error", "not checked")):
-        return "Unknown", "Unknown"
-    if d == "not set" or not d:
-        return "Index (default)", "Follow (default)"
-    is_none = bool(re.search(r"\bnone\b", d))
-    index = "Noindex" if ("noindex" in d or is_none) else "Index"
-    follow = "Nofollow" if ("nofollow" in d or is_none) else "Follow"
-    return index, follow
-
-
-def annotate_robots(rows, limit=ROBOTS_LIMIT_DEFAULT):
-    """Fill Robots / Index Status / Follow Status on each row, in parallel."""
-    targets = rows[:limit] if limit and limit > 0 else rows
-
-    for row in rows[len(targets):]:
-        row["Robots"] = "Not checked (limit reached)"
-        row["Index Status"] = "Unknown"
-        row["Follow Status"] = "Unknown"
-
-    if not targets:
-        return rows
-
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(
-        pool_connections=ROBOTS_WORKERS, pool_maxsize=ROBOTS_WORKERS, max_retries=0
-    )
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=ROBOTS_WORKERS) as ex:
-            futures = {
-                ex.submit(fetch_robots_directive, session, r["URL"]): r
-                for r in targets if r.get("URL")
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                row = futures[fut]
-                try:
-                    directive = fut.result()
-                except Exception as e:
-                    directive = f"Error: {type(e).__name__}"
-                row["Robots"] = directive
-                row["Index Status"], row["Follow Status"] = derive_status(directive)
-    finally:
-        session.close()
-
-    return rows
-
-
-# =========================================================================
-# EXCEL OUTPUT
-# =========================================================================
-
-# Add "Index Status" here (and a width below) to also surface Index/Noindex —
-# the value is already computed on every row.
-HDR = ["URL", "Robots", "Follow Status", "Keyword",
-       "Last Modified", "Change Freq", "Priority"]
-COL_WIDTHS = [80, 30, 14, 45, 22, 14, 10]
-
-
-def add_sheet(wb, name, rows):
-    HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=11)
-    HEADER_FILL = PatternFill("solid", fgColor="2F5496")
-    HEADER_ALIGN = Alignment(horizontal="center", vertical="center")
-    CELL_FONT = Font(name="Arial", size=10)
-    BAD_FONT = Font(name="Arial", size=10, color="C00000", bold=True)
-    WARN_FONT = Font(name="Arial", size=10, color="808080", italic=True)
-    THIN_BORDER = Border(bottom=Side(style="thin", color="D9D9D9"))
-
-    name = name[:31]
-    ws = wb.create_sheet(title=name)
-
-    for ci, h in enumerate(HDR, 1):
-        c = ws.cell(row=1, column=ci, value=h)
-        c.font, c.fill, c.alignment = HEADER_FONT, HEADER_FILL, HEADER_ALIGN
-
-    for ri, row in enumerate(rows, 2):
-        for ci, key in enumerate(HDR, 1):
-            val = row.get(key, "")
-            c = ws.cell(row=ri, column=ci, value=val)
-            c.border = THIN_BORDER
-            if key in ("Robots", "Index Status", "Follow Status"):
-                low = str(val).lower()
-                if "nofollow" in low or "noindex" in low or re.search(r"\bnone\b", low):
-                    c.font = BAD_FONT
-                elif low.startswith(("error", "http ", "unknown", "not checked")):
-                    c.font = WARN_FONT
-                else:
-                    c.font = CELL_FONT
-            else:
-                c.font = CELL_FONT
-
-    for i, w in enumerate(COL_WIDTHS, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-
-    last_col = get_column_letter(len(HDR))
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{last_col}{len(rows) + 1}"
-
-
-def get_categories(sitemap_url):
-    content = fetch_sitemap(sitemap_url)
-    index_tree = etree.fromstring(content)
-    root_tag = etree.QName(index_tree.tag).localname
-
-    if root_tag == "sitemapindex":
-        child_locs = [loc.text.strip() for loc in index_tree.findall("sm:sitemap/sm:loc", NS)]
-    else:
-        child_locs = [sitemap_url]
-
-    categories = {}
-    for child_url in child_locs:
-        stype = guess_type(child_url)
-        lang = guess_lang(child_url)
-        categories.setdefault(stype, []).append({"url": child_url, "lang": lang})
-    return categories
-
-
-@app.post("/api/analyze")
-def analyze(req: AnalyzeRequest):
-    try:
-        categories = get_categories(req.url)
-        response_data = []
-        for stype, items in categories.items():
-            langs = sorted(set(item["lang"] for item in items))
-            lang_labels = ", ".join(LANG_NAMES.get(l, l.upper()) for l in langs)
-            response_data.append({
-                "type": stype,
-                "count": len(items),
-                "langs": lang_labels
-            })
-        return {"categories": response_data}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/scrape")
-def scrape(req: ScrapeRequest):
-    try:
-        all_categories = get_categories(req.url)
-        scraped_data = {}
-
-        for stype in req.categories:
-            if stype in all_categories:
-                for item in all_categories[stype]:
-                    urls = extract_urls(item["url"])
-                    if req.check_robots:
-                        annotate_robots(urls, limit=req.robots_limit)
-                    scraped_data[(stype, item["lang"])] = urls
-
-        wb = Workbook()
-        wb.remove(wb.active)
-
-        types_in_data = sorted(set(t for t, l in scraped_data.keys()))
-        for stype in types_in_data:
-            langs = sorted([l for (t, l) in scraped_data if t == stype])
-            for lang in langs:
-                lang_label = LANG_NAMES.get(lang, lang.upper())
-                sheet_name = stype if len(langs) == 1 and lang == "en" else f"{stype} - {lang_label}"
-                add_sheet(wb, sheet_name, scraped_data[(stype, lang)])
-
-        output = BytesIO()
-        wb.save(output)
-        excel_data = output.getvalue()
-
-        return Response(
-            content=excel_data,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=sitemap_links.xlsx"}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+  $('sitemap').addEventListener('keydown', function(e){
+    if(e.key === 'Enter') $('analyzeBtn').click();
+  });
+})();
+</script>
+</body>
+</html>
