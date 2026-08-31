@@ -23,15 +23,13 @@ LANG_NAMES = {
     "tr": "Turkish", "ja": "Japanese", "it": "Italian", "nl": "Dutch"
 }
 
-# --- Optional per-page fields the user can toggle on in the UI ---
-# key sent by the frontend -> column header in the Excel file
+# Optional per-page fields: key sent by the frontend -> Excel column header
 FIELD_LABELS = {
     "meta_title": "Meta Title",
     "meta_description": "Meta Description",
     "h1": "H1",
 }
 FIELD_ORDER = ["meta_title", "meta_description", "h1"]
-
 SITEMAP_COLUMNS = ["Last Modified", "Change Freq", "Priority"]
 
 COL_WIDTHS = {
@@ -45,10 +43,10 @@ COL_WIDTHS = {
     "Priority": 10,
 }
 
-MAX_WORKERS = 12          # parallel page fetches
-PAGE_TIMEOUT = 12         # seconds per page
+MAX_WORKERS = 20          # parallel page fetches inside one batch
+PAGE_TIMEOUT = 10         # seconds per page
 MAX_HTML_BYTES = 300_000  # stop reading a page after this much HTML
-MAX_PAGES = 400           # total pages fetched per request (serverless guard)
+MAX_BATCH = 120           # hard cap on URLs accepted per /api/pages call
 
 SESSION = requests.Session()
 SESSION.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=MAX_WORKERS))
@@ -59,11 +57,29 @@ class AnalyzeRequest(BaseModel):
     url: str
 
 
-class ScrapeRequest(BaseModel):
+class UrlsRequest(BaseModel):
     url: str
     categories: list[str]
+
+
+class PagesRequest(BaseModel):
+    urls: list[str]
     fields: list[str] = []
 
+
+class ExportSheet(BaseModel):
+    name: str
+    rows: list[dict]
+
+
+class ExportRequest(BaseModel):
+    sheets: list[ExportSheet]
+    fields: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Sitemap parsing
+# ---------------------------------------------------------------------------
 
 def fetch_sitemap(url):
     resp = requests.get(url, headers=HEADERS, timeout=30)
@@ -108,6 +124,24 @@ def extract_urls(url):
     return entries
 
 
+def get_categories(sitemap_url):
+    content = fetch_sitemap(sitemap_url)
+    index_tree = etree.fromstring(content)
+    root_tag = etree.QName(index_tree.tag).localname
+
+    if root_tag == "sitemapindex":
+        child_locs = [loc.text.strip() for loc in index_tree.findall("sm:sitemap/sm:loc", NS)]
+    else:
+        child_locs = [sitemap_url]
+
+    categories = {}
+    for child_url in child_locs:
+        stype = guess_type(child_url)
+        lang = guess_lang(child_url)
+        categories.setdefault(stype, []).append({"url": child_url, "lang": lang})
+    return categories
+
+
 # ---------------------------------------------------------------------------
 # Page-level extraction (meta title / meta description / H1)
 # ---------------------------------------------------------------------------
@@ -125,7 +159,6 @@ def first_value(values):
 
 
 def parse_page_fields(html_bytes, fields):
-    """Pull the requested fields out of a page's HTML."""
     data = {FIELD_LABELS[f]: "" for f in fields}
     if not html_bytes:
         return data
@@ -141,7 +174,6 @@ def parse_page_fields(html_bytes, fields):
         data["Meta Title"] = title
 
     if "meta_description" in fields:
-        # case-insensitive match on name="description"
         desc = first_value(doc.xpath(
             "//meta[translate(@name, 'DESCRIPTION', 'description')='description']/@content"
         ))
@@ -157,7 +189,6 @@ def parse_page_fields(html_bytes, fields):
 
 
 def fetch_page(url, fields):
-    """Fetch one page and return its field values plus an HTTP status."""
     result = {FIELD_LABELS[f]: "" for f in fields}
     result["Status"] = ""
 
@@ -191,27 +222,9 @@ def fetch_page(url, fields):
     return result
 
 
-def enrich_rows(rows, fields, budget):
-    """Fetch pages in parallel and merge the extracted fields into rows."""
-    if not fields or not rows:
-        return rows, budget
-
-    take = max(0, min(budget, len(rows)))
-    targets = rows[:take]
-
-    if targets:
-        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(targets))) as pool:
-            results = list(pool.map(lambda r: fetch_page(r["URL"], fields), targets))
-        for row, extra in zip(targets, results):
-            row.update(extra)
-
-    for row in rows[take:]:
-        row["Status"] = "Not fetched (page limit)"
-        for f in fields:
-            row[FIELD_LABELS[f]] = ""
-
-    return rows, budget - take
-
+# ---------------------------------------------------------------------------
+# Excel output
+# ---------------------------------------------------------------------------
 
 def build_headers(fields):
     headers = ["URL"]
@@ -230,7 +243,7 @@ def add_sheet(wb, name, rows, headers):
     CELL_ALIGN = Alignment(vertical="top")
     THIN_BORDER = Border(bottom=Side(style="thin", color="D9D9D9"))
 
-    name = name[:31]
+    name = re.sub(r"[\\/*?:\[\]]", "-", name)[:31] or "Sheet"
     ws = wb.create_sheet(title=name)
 
     for ci, h in enumerate(headers, 1):
@@ -250,26 +263,13 @@ def add_sheet(wb, name, rows, headers):
     ws.auto_filter.ref = f"A1:{last_col}{len(rows) + 1}"
 
 
-def get_categories(sitemap_url):
-    content = fetch_sitemap(sitemap_url)
-    index_tree = etree.fromstring(content)
-    root_tag = etree.QName(index_tree.tag).localname
-
-    if root_tag == "sitemapindex":
-        child_locs = [loc.text.strip() for loc in index_tree.findall("sm:sitemap/sm:loc", NS)]
-    else:
-        child_locs = [sitemap_url]
-
-    categories = {}
-    for child_url in child_locs:
-        stype = guess_type(child_url)
-        lang = guess_lang(child_url)
-        categories.setdefault(stype, []).append({"url": child_url, "lang": lang})
-    return categories
-
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
+    """Step 1: list sitemap categories so the user can pick."""
     try:
         categories = get_categories(req.url)
         response_data = []
@@ -286,50 +286,80 @@ def analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/scrape")
-def scrape(req: ScrapeRequest):
+@app.post("/api/urls")
+def urls(req: UrlsRequest):
+    """Step 2: return every URL, grouped into sheets. No page fetching, so it's fast."""
+    try:
+        all_categories = get_categories(req.url)
+        collected = {}
+
+        for stype in req.categories:
+            for item in all_categories.get(stype, []):
+                key = (stype, item["lang"])
+                collected.setdefault(key, []).extend(extract_urls(item["url"]))
+
+        sheets = []
+        for stype in sorted(set(t for t, _ in collected)):
+            langs = sorted(l for (t, l) in collected if t == stype)
+            for lang in langs:
+                lang_label = LANG_NAMES.get(lang, lang.upper())
+                name = stype if len(langs) == 1 and lang == "en" else f"{stype} - {lang_label}"
+                sheets.append({"name": name, "rows": collected[(stype, lang)]})
+
+        total = sum(len(s["rows"]) for s in sheets)
+        return {"sheets": sheets, "total": total}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/pages")
+def pages(req: PagesRequest):
+    """Step 3: fetch one batch of pages. The browser calls this repeatedly."""
+    fields = [f for f in FIELD_ORDER if f in req.fields]
+    if not fields:
+        raise HTTPException(status_code=400, detail="No page fields requested")
+    if len(req.urls) > MAX_BATCH:
+        raise HTTPException(status_code=400, detail=f"Batch too large (max {MAX_BATCH})")
+
+    if not req.urls:
+        return {"results": []}
+
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(req.urls))) as pool:
+        results = list(pool.map(lambda u: fetch_page(u, fields), req.urls))
+
+    return {"results": results}
+
+
+@app.post("/api/export")
+def export(req: ExportRequest):
+    """Step 4: build the workbook from the rows the browser assembled."""
     try:
         fields = [f for f in FIELD_ORDER if f in req.fields]
         headers = build_headers(fields)
 
-        all_categories = get_categories(req.url)
-        scraped_data = {}
-        budget = MAX_PAGES
-
-        for stype in req.categories:
-            if stype in all_categories:
-                for item in all_categories[stype]:
-                    urls = extract_urls(item["url"])
-                    urls, budget = enrich_rows(urls, fields, budget)
-                    scraped_data[(stype, item["lang"])] = urls
-
         wb = Workbook()
         wb.remove(wb.active)
 
-        types_in_data = sorted(set(t for t, l in scraped_data.keys()))
-        for stype in types_in_data:
-            langs = sorted([l for (t, l) in scraped_data if t == stype])
-            for lang in langs:
-                lang_label = LANG_NAMES.get(lang, lang.upper())
-                sheet_name = stype if len(langs) == 1 and lang == "en" else f"{stype} - {lang_label}"
-                add_sheet(wb, sheet_name, scraped_data[(stype, lang)], headers)
+        used = set()
+        for sheet in req.sheets:
+            name = sheet.name
+            suffix = 2
+            while name.lower() in used:
+                name = f"{sheet.name[:27]} ({suffix})"
+                suffix += 1
+            used.add(name.lower())
+            add_sheet(wb, name, sheet.rows, headers)
+
+        if not wb.sheetnames:
+            raise ValueError("Nothing to export")
 
         output = BytesIO()
         wb.save(output)
-        excel_data = output.getvalue()
-
-        pages_fetched = MAX_PAGES - budget if fields else 0
-        limit_hit = "1" if (fields and budget <= 0) else "0"
 
         return Response(
-            content=excel_data,
+            content=output.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={
-                "Content-Disposition": "attachment; filename=sitemap_links.xlsx",
-                "X-Pages-Fetched": str(pages_fetched),
-                "X-Page-Limit-Hit": limit_hit,
-                "Access-Control-Expose-Headers": "X-Pages-Fetched, X-Page-Limit-Hit",
-            }
+            headers={"Content-Disposition": "attachment; filename=sitemap_links.xlsx"}
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
