@@ -16,7 +16,6 @@
     #status { margin-top: 15px; font-weight: bold; color: #333; text-align: center; }
     .error { color: red; }
 
-    /* Optional page data toggles */
     .field-group { margin: 20px 0; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
     .field-group p { margin: 0 0 4px; font-weight: bold; }
     .field-group .hint { margin: 0 0 12px; font-weight: normal; font-size: 13px; color: #666; }
@@ -29,6 +28,11 @@
     button.toggle.active { background: #2F5496; color: white; }
     button.toggle.active::before { content: "✓ "; }
     button.toggle:focus-visible { outline: 2px solid #1f3a6b; outline-offset: 2px; }
+
+    #stopBtn { background: #8a1c1c; display: none; }
+    #stopBtn:hover { background: #6d1616; }
+    .bar { height: 6px; background: #eee; border-radius: 3px; margin-top: 12px; overflow: hidden; display: none; }
+    .bar span { display: block; height: 100%; width: 0; background: #2F5496; transition: width .2s linear; }
   </style>
 </head>
 <body>
@@ -44,7 +48,7 @@
 
       <div class="field-group">
         <p>Add page data</p>
-        <p class="hint">Tap what you need. Each one opens every URL, so the export takes longer.</p>
+        <p class="hint">Tap what you need. Each one opens every URL, so large sitemaps take a few minutes.</p>
         <div class="toggle-row">
           <button type="button" class="toggle" data-field="meta_title">Meta Title</button>
           <button type="button" class="toggle" data-field="meta_description">Meta Description</button>
@@ -53,45 +57,73 @@
       </div>
 
       <button id="scrapeBtn" onclick="scrapeSitemap()">Scrape &amp; Download Excel</button>
+      <button id="stopBtn" onclick="stopRun()">Stop and download what's done</button>
+      <div class="bar" id="bar"><span id="barFill"></span></div>
     </div>
 
     <div id="status"></div>
   </div>
 
   <script>
-    // Toggle the optional page-data buttons on and off
+    const BATCH_SIZE = 60;   // URLs sent per /api/pages call
+    let stopRequested = false;
+
     document.querySelectorAll('.toggle').forEach(btn => {
       btn.addEventListener('click', () => btn.classList.toggle('active'));
     });
 
     function getSelectedFields() {
-      return Array.from(document.querySelectorAll('.toggle.active'))
-                  .map(btn => btn.dataset.field);
+      return Array.from(document.querySelectorAll('.toggle.active')).map(b => b.dataset.field);
+    }
+
+    function setStatus(html, isError) {
+      document.getElementById('status').innerHTML =
+        isError ? `<span class="error">❌ ${html}</span>` : html;
+    }
+
+    function setProgress(done, total) {
+      const bar = document.getElementById('bar');
+      const fill = document.getElementById('barFill');
+      if (!total) { bar.style.display = 'none'; return; }
+      bar.style.display = 'block';
+      fill.style.width = `${Math.round((done / total) * 100)}%`;
+    }
+
+    function stopRun() {
+      stopRequested = true;
+      setStatus("⏹ Finishing the current batch...");
+    }
+
+    async function postJson(path, body) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch (e) {}
+        throw new Error(detail);
+      }
+      return res;
     }
 
     async function analyzeSitemap() {
-      const url = document.getElementById('sitemapUrl').value;
-      const statusEl = document.getElementById('status');
+      const url = document.getElementById('sitemapUrl').value.trim();
       const analyzeBtn = document.getElementById('analyzeBtn');
       const container = document.getElementById('categoryContainer');
       const list = document.getElementById('categoriesList');
 
       if (!url) return alert("Please enter a URL");
 
-      statusEl.innerHTML = "⏳ Fetching sitemap...";
+      setStatus("⏳ Fetching sitemap...");
       analyzeBtn.disabled = true;
       container.style.display = "none";
       list.innerHTML = "";
 
       try {
-        const res = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: url })
-        });
-
+        const res = await postJson('/api/analyze', { url });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Failed to fetch");
 
         data.categories.forEach(cat => {
           list.innerHTML += `
@@ -103,49 +135,81 @@
         });
 
         container.style.display = "block";
-        statusEl.innerHTML = `✅ Found ${data.categories.length} categories!`;
+        setStatus(`✅ Found ${data.categories.length} categories!`);
       } catch (error) {
-        statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+        setStatus(`Error: ${error.message}`, true);
       } finally {
         analyzeBtn.disabled = false;
       }
     }
 
+    // Fetch page data for one batch, with a single retry before giving up.
+    async function fetchBatch(urls, fields) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await postJson('/api/pages', { urls, fields });
+          return (await res.json()).results;
+        } catch (error) {
+          if (attempt === 1) {
+            return urls.map(() => ({ Status: "Error: batch failed" }));
+          }
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+    }
+
     async function scrapeSitemap() {
-      const url = document.getElementById('sitemapUrl').value;
-      const statusEl = document.getElementById('status');
+      const url = document.getElementById('sitemapUrl').value.trim();
       const scrapeBtn = document.getElementById('scrapeBtn');
+      const stopBtn = document.getElementById('stopBtn');
       const checkedBoxes = document.querySelectorAll('#categoriesList input:checked');
-      const selectedCategories = Array.from(checkedBoxes).map(cb => cb.value);
-      const selectedFields = getSelectedFields();
+      const categories = Array.from(checkedBoxes).map(cb => cb.value);
+      const fields = getSelectedFields();
 
-      if (selectedCategories.length === 0) return alert("Select at least one category");
+      if (categories.length === 0) return alert("Select at least one category");
 
-      statusEl.innerHTML = selectedFields.length
-        ? "⏳ Opening every URL to read page data. This can take a few minutes."
-        : "⏳ Scraping URLs... This might take a minute.";
+      stopRequested = false;
       scrapeBtn.disabled = true;
+      setStatus("⏳ Reading sitemaps...");
 
       try {
-        const res = await fetch('/api/scrape', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: url,
-            categories: selectedCategories,
-            fields: selectedFields
-          })
-        });
+        // Step 1 — collect every URL. Fast, no page fetching.
+        const urlRes = await postJson('/api/urls', { url, categories });
+        const { sheets, total } = await urlRes.json();
 
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.detail || "Scraping failed");
+        if (!total) throw new Error("No URLs found in the selected categories");
+
+        // Step 2 — walk the URLs in batches, filling in page data as we go.
+        if (fields.length) {
+          stopBtn.style.display = 'block';
+          let done = 0;
+
+          for (const sheet of sheets) {
+            for (let i = 0; i < sheet.rows.length; i += BATCH_SIZE) {
+              if (stopRequested) break;
+
+              const slice = sheet.rows.slice(i, i + BATCH_SIZE);
+              const results = await fetchBatch(slice.map(r => r.URL), fields);
+              slice.forEach((row, n) => Object.assign(row, results[n]));
+
+              done += slice.length;
+              setProgress(done, total);
+              setStatus(`⏳ Reading pages… ${done.toLocaleString()} of ${total.toLocaleString()}`);
+            }
+            if (stopRequested) break;
+          }
+
+          // Mark anything we never got to, so blanks are never ambiguous.
+          sheets.forEach(sheet => sheet.rows.forEach(row => {
+            if (!row.Status) row.Status = "Not fetched (stopped)";
+          }));
         }
 
-        const limitHit = res.headers.get('X-Page-Limit-Hit') === '1';
-        const pagesFetched = res.headers.get('X-Pages-Fetched');
+        // Step 3 — build and download the workbook.
+        setStatus("⏳ Building the Excel file...");
+        const exportRes = await postJson('/api/export', { sheets, fields });
 
-        const blob = await res.blob();
+        const blob = await exportRes.blob();
         const downloadUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = downloadUrl;
@@ -155,13 +219,15 @@
         a.remove();
         window.URL.revokeObjectURL(downloadUrl);
 
-        statusEl.innerHTML = limitHit
-          ? `✅ Excel downloaded. Page data stops after ${pagesFetched} URLs — rerun with fewer categories to cover the rest.`
-          : "✅ Excel file downloaded successfully!";
+        setStatus(stopRequested
+          ? "✅ Excel downloaded with the rows completed before you stopped."
+          : `✅ Excel downloaded — ${total.toLocaleString()} URLs.`);
       } catch (error) {
-        statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+        setStatus(`Error: ${error.message}`, true);
       } finally {
         scrapeBtn.disabled = false;
+        stopBtn.style.display = 'none';
+        setProgress(0, 0);
       }
     }
   </script>
