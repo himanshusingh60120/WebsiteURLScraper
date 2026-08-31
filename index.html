@@ -1,431 +1,169 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sitemap Crawl Audit</title>
-<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
-<style>
-  :root{
-    --paper:#F4F6F8; --card:#FFF; --ink:#14212B; --ink-soft:#5A6B78;
-    --rule:#D8DFE5; --teal:#0B5F6B; --teal-dim:#0E7482;
-    --flag:#B3261E; --amber:#8A6D00; --grey:#9AA7B1;
-    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
-       line-height:1.5;padding:40px 20px 80px}
-  .wrap{max-width:840px;margin:0 auto}
-  header{border-bottom:2px solid var(--ink);padding-bottom:18px;margin-bottom:32px}
-  h1{margin:0;font-size:30px;font-weight:650;letter-spacing:-.025em}
-  .sub{margin:6px 0 0;color:var(--ink-soft);font-size:14px}
-  .card{background:var(--card);border:1px solid var(--rule);border-radius:6px;
-        padding:22px;margin-bottom:20px}
-  label.fld{display:block;font-size:12px;font-weight:600;letter-spacing:.07em;
-            text-transform:uppercase;color:var(--ink-soft);margin-bottom:8px}
-  input[type=url],input[type=number]{width:100%;padding:11px 13px;border:1px solid var(--rule);
-    border-radius:4px;font-family:var(--mono);font-size:14px;background:#fff;color:var(--ink)}
-  input:focus{outline:2px solid var(--teal);outline-offset:1px;border-color:var(--teal)}
-  button{font-family:var(--sans);font-size:14px;font-weight:600;cursor:pointer;
-         border-radius:4px;padding:11px 20px;border:1px solid transparent}
-  .primary{background:var(--teal);color:#fff}
-  .primary:hover:not(:disabled){background:var(--teal-dim)}
-  .ghost{background:#fff;border-color:var(--rule);color:var(--ink)}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  .row{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center}
-  .manifest{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
-  .manifest li{display:flex;align-items:center;gap:12px;padding:11px 2px;
-               border-bottom:1px solid var(--rule)}
-  .manifest input{width:16px;height:16px;accent-color:var(--teal);flex:none}
-  .mname{font-weight:600;font-size:14px}
-  .mmeta{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
-  .opt{display:flex;align-items:center;gap:9px;font-size:14px;margin-top:6px}
-  .opt input[type=checkbox]{width:16px;height:16px;accent-color:var(--teal)}
-  .hint{font-size:12.5px;color:var(--ink-soft);margin:7px 0 0}
-  .note{border-left:3px solid var(--amber);background:#FFFBEF;padding:11px 14px;
-        font-size:13px;margin-top:16px;border-radius:0 4px 4px 0}
-  .err{border-left:3px solid var(--flag);background:#FDF2F1;padding:11px 14px;
-       font-size:13px;margin-top:16px;border-radius:0 4px 4px 0;
-       font-family:var(--mono);white-space:pre-wrap;word-break:break-word}
-  .status{font-family:var(--mono);font-size:13px;color:var(--ink-soft)}
-  .hidden{display:none}
-  .bar{height:8px;background:#E4E9ED;border-radius:99px;overflow:hidden;margin-top:16px}
-  .bar span{display:block;height:100%;width:0;background:var(--teal);
-            border-radius:99px;transition:width .25s ease}
-  .prog{display:flex;justify-content:space-between;font-family:var(--mono);
-        font-size:12.5px;color:var(--ink-soft);margin-top:8px}
-  .tally{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-size:12.5px}
-  .chip{display:inline-flex;align-items:center;gap:6px;color:var(--ink-soft)}
-  .dot{width:9px;height:9px;border-radius:50%;flex:none}
-  .num{font-family:var(--mono);color:var(--ink);font-weight:600}
-  .small{max-width:150px}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sitemap Scraper</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
+    .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    input[type="text"] { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    button { background: #2F5496; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 10px; }
+    button:hover { background: #1f3a6b; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    .checkbox-group { margin: 20px 0; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
+    label { display: block; margin-bottom: 8px; cursor: pointer; }
+    #status { margin-top: 15px; font-weight: bold; color: #333; text-align: center; }
+    .error { color: red; }
+
+    /* Optional page data toggles */
+    .field-group { margin: 20px 0; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
+    .field-group p { margin: 0 0 4px; font-weight: bold; }
+    .field-group .hint { margin: 0 0 12px; font-weight: normal; font-size: 13px; color: #666; }
+    .toggle-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    button.toggle {
+      width: auto; margin-top: 0; font-size: 14px; padding: 8px 14px;
+      background: white; color: #2F5496; border: 1px solid #2F5496;
+    }
+    button.toggle:hover { background: #eef2f9; }
+    button.toggle.active { background: #2F5496; color: white; }
+    button.toggle.active::before { content: "✓ "; }
+    button.toggle:focus-visible { outline: 2px solid #1f3a6b; outline-offset: 2px; }
+  </style>
 </head>
 <body>
-<div class="wrap">
-
-  <header>
-    <h1>Sitemap Crawl Audit</h1>
-    <p class="sub">Pull every URL from a sitemap and record its robots directive &mdash;
-       index/noindex, follow/nofollow &mdash; into a spreadsheet.</p>
-  </header>
-
   <div class="card">
-    <label class="fld" for="sitemap">Sitemap URL</label>
-    <input type="url" id="sitemap" placeholder="https://example.com/sitemap.xml" spellcheck="false">
-    <div class="row">
-      <button class="primary" id="analyzeBtn">Analyze sitemap</button>
-      <span class="status" id="analyzeStatus"></span>
+    <h2>🔗 Sitemap Link Scraper</h2>
+    <p>Paste an XML sitemap URL to extract and categorize links into an Excel file.</p>
+
+    <input type="text" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" />
+    <button id="analyzeBtn" onclick="analyzeSitemap()">Analyze Sitemap</button>
+
+    <div id="categoryContainer" style="display: none;">
+      <div class="checkbox-group" id="categoriesList"></div>
+
+      <div class="field-group">
+        <p>Add page data</p>
+        <p class="hint">Tap what you need. Each one opens every URL, so the export takes longer.</p>
+        <div class="toggle-row">
+          <button type="button" class="toggle" data-field="meta_title">Meta Title</button>
+          <button type="button" class="toggle" data-field="meta_description">Meta Description</button>
+          <button type="button" class="toggle" data-field="h1">H1</button>
+        </div>
+      </div>
+
+      <button id="scrapeBtn" onclick="scrapeSitemap()">Scrape &amp; Download Excel</button>
     </div>
-    <div id="analyzeErr" class="err hidden"></div>
+
+    <div id="status"></div>
   </div>
 
-  <div class="card hidden" id="resultCard">
-    <label class="fld">Sitemaps found</label>
-    <ul class="manifest" id="manifest"></ul>
-    <div class="row" style="margin-top:18px">
-      <button class="ghost" id="allBtn">Select all</button>
-      <button class="ghost" id="noneBtn">Clear</button>
-    </div>
-
-    <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--rule)">
-      <label class="fld">Robots check</label>
-      <div class="opt">
-        <input type="checkbox" id="checkRobots" checked>
-        <label for="checkRobots">Fetch every page and read its robots directive</label>
-      </div>
-      <p class="hint">Runs in small batches so there is no size limit &mdash; 20,000 URLs
-         takes roughly 8&ndash;20 minutes. Keep this tab open.</p>
-
-      <div style="margin-top:14px" class="small">
-        <label class="fld" for="batchSize">URLs per batch</label>
-        <input type="number" id="batchSize" value="80" min="10" max="150">
-      </div>
-      <p class="hint">Lower this if batches start failing. Raise it to go faster.</p>
-    </div>
-
-    <div class="row" style="margin-top:20px">
-      <button class="primary" id="runBtn">Run audit</button>
-      <button class="ghost hidden" id="stopBtn">Stop</button>
-      <span class="status" id="runStatus"></span>
-    </div>
-
-    <div id="progWrap" class="hidden">
-      <div class="bar"><span id="barFill"></span></div>
-      <div class="prog">
-        <span id="progLeft">&nbsp;</span>
-        <span id="progRight">&nbsp;</span>
-      </div>
-      <div class="tally">
-        <span class="chip"><span class="dot" style="background:var(--teal)"></span>
-          Follow <span class="num" id="tFollow">0</span></span>
-        <span class="chip"><span class="dot" style="background:var(--flag)"></span>
-          Noindex/nofollow <span class="num" id="tFlag">0</span></span>
-        <span class="chip"><span class="dot" style="background:var(--grey)"></span>
-          Unreachable <span class="num" id="tUnknown">0</span></span>
-      </div>
-    </div>
-
-    <div id="runErr" class="err hidden"></div>
-    <div id="doneNote" class="note hidden"></div>
-  </div>
-
-</div>
-
-<script>
-(function(){
-  var $ = function(id){ return document.getElementById(id); };
-  var categories = [], sheets = [], cache = {}, stopped = false, running = false;
-
-  var CONCURRENCY = 3;   // parallel batches in flight
-  var PAGE = 6000;       // rows per /api/urls page
-
-  function show(el){ el.classList.remove('hidden'); }
-  function hide(el){ el.classList.add('hidden'); }
-  function showErr(el,m){ el.textContent = m; show(el); }
-
-  async function post(path, body){
-    var res = await fetch(path, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body)
+  <script>
+    // Toggle the optional page-data buttons on and off
+    document.querySelectorAll('.toggle').forEach(btn => {
+      btn.addEventListener('click', () => btn.classList.toggle('active'));
     });
-    if(!res.ok){
-      var msg = 'HTTP ' + res.status;
-      try { var j = await res.json(); if(j && j.detail) msg += ' \u2014 ' + j.detail; }
-      catch(e){}
-      throw new Error(msg);
+
+    function getSelectedFields() {
+      return Array.from(document.querySelectorAll('.toggle.active'))
+                  .map(btn => btn.dataset.field);
     }
-    return res.json();
-  }
 
-  function derive(directive){
-    var d = (directive||'').toLowerCase();
-    if(d.indexOf('http ')===0 || d.indexOf('error')===0 || d.indexOf('not checked')===0)
-      return ['Unknown','Unknown'];
-    if(d==='not set' || !d) return ['Index (default)','Follow (default)'];
-    var isNone = /\bnone\b/.test(d);
-    return [ (d.indexOf('noindex')>=0||isNone) ? 'Noindex' : 'Index',
-             (d.indexOf('nofollow')>=0||isNone) ? 'Nofollow' : 'Follow' ];
-  }
+    async function analyzeSitemap() {
+      const url = document.getElementById('sitemapUrl').value;
+      const statusEl = document.getElementById('status');
+      const analyzeBtn = document.getElementById('analyzeBtn');
+      const container = document.getElementById('categoryContainer');
+      const list = document.getElementById('categoriesList');
 
-  // ---------------------------------------------------------------- analyze
-  $('analyzeBtn').addEventListener('click', async function(){
-    var url = $('sitemap').value.trim();
-    hide($('analyzeErr'));
-    if(!url){ showErr($('analyzeErr'),'Enter a sitemap URL first.'); return; }
-    this.disabled = true;
-    $('analyzeStatus').textContent = 'Reading sitemap\u2026';
-    try{
-      var data = await post('/api/analyze', { url: url });
-      categories = data.categories || [];
-      if(!categories.length) throw new Error('No sitemaps found at that URL.');
-      renderManifest();
-      $('analyzeStatus').textContent = categories.length + ' found';
-      show($('resultCard'));
-    }catch(err){
-      showErr($('analyzeErr'), err.message);
-      $('analyzeStatus').textContent = '';
-      hide($('resultCard'));
-    }finally{ this.disabled = false; }
-  });
+      if (!url) return alert("Please enter a URL");
 
-  function renderManifest(){
-    var ul = $('manifest'); ul.innerHTML = '';
-    categories.forEach(function(c,i){
-      var li = document.createElement('li');
-      var cb = document.createElement('input');
-      cb.type='checkbox'; cb.checked=true; cb.id='cat'+i; cb.value=c.type;
-      var lab = document.createElement('label');
-      lab.className='mname'; lab.htmlFor=cb.id; lab.textContent=c.type;
-      var meta = document.createElement('span');
-      meta.className='mmeta';
-      meta.textContent = c.count + (c.count===1?' file':' files') +
-                         (c.langs ? '  \u00b7  ' + c.langs : '');
-      li.appendChild(cb); li.appendChild(lab); li.appendChild(meta);
-      ul.appendChild(li);
-    });
-  }
-  function setAll(v){
-    Array.prototype.forEach.call(
-      document.querySelectorAll('#manifest input[type=checkbox]'),
-      function(cb){ cb.checked=v; });
-  }
-  $('allBtn').addEventListener('click', function(){ setAll(true); });
-  $('noneBtn').addEventListener('click', function(){ setAll(false); });
-  $('stopBtn').addEventListener('click', function(){ stopped = true; this.disabled = true; });
+      statusEl.innerHTML = "⏳ Fetching sitemap...";
+      analyzeBtn.disabled = true;
+      container.style.display = "none";
+      list.innerHTML = "";
 
-  // ---------------------------------------------------------------- run
-  $('runBtn').addEventListener('click', async function(){
-    if(running) return;
-    hide($('runErr')); hide($('doneNote'));
-    var picked = Array.prototype.filter.call(
-      document.querySelectorAll('#manifest input[type=checkbox]'),
-      function(cb){ return cb.checked; }).map(function(cb){ return cb.value; });
-    if(!picked.length){ showErr($('runErr'),'Select at least one sitemap.'); return; }
-
-    running = true; stopped = false;
-    this.disabled = true;
-    $('stopBtn').disabled = false; show($('stopBtn'));
-    show($('progWrap'));
-    var t0 = Date.now();
-
-    try{
-      var url = $('sitemap').value.trim();
-
-      // 1. sheet list
-      $('runStatus').textContent = 'Listing sheets\u2026';
-      var s = await post('/api/sheets', { url: url, categories: picked });
-      sheets = s.sheets || [];
-      if(!sheets.length) throw new Error('No URLs found in the selected sitemaps.');
-
-      // 2. page in every row
-      var grand = sheets.reduce(function(a,b){ return a + b.total; }, 0);
-      var loaded = 0;
-      for(var i=0;i<sheets.length;i++){
-        var sh = sheets[i]; sh.rows = [];
-        for(var off=0; off<sh.total; off+=PAGE){
-          if(stopped) throw new Error('STOPPED');
-          var p = await post('/api/urls', {
-            url:url, type:sh.type, lang:sh.lang, offset:off, limit:PAGE });
-          sh.rows = sh.rows.concat(p.rows);
-          loaded += p.rows.length;
-          setBar(loaded/grand*0.15, 'Loading URLs', loaded + ' / ' + grand, t0);
-          if(!p.rows.length) break;
-        }
-      }
-
-      // 3. robots, in batches
-      if($('checkRobots').checked){
-        var all = [], seen = {};
-        sheets.forEach(function(sh){ sh.rows.forEach(function(r){
-          if(r.url && !seen[r.url] && !cache[r.url]){ seen[r.url]=1; all.push(r.url); }
-        });});
-
-        var size = Math.max(10, Math.min(150, parseInt($('batchSize').value,10)||80));
-        var batches = [];
-        for(var b=0;b<all.length;b+=size) batches.push(all.slice(b,b+size));
-
-        var done = 0, cursor = 0, failed = 0;
-        var totalToDo = all.length;
-
-        async function worker(){
-          while(cursor < batches.length && !stopped){
-            var mine = batches[cursor++];
-            try{
-              var r = await post('/api/robots', { urls: mine });
-              for(var k in r.results) cache[k] = r.results[k];
-            }catch(e){
-              // one retry at half size, then record the failure and move on
-              try{
-                var half = Math.ceil(mine.length/2);
-                var a = await post('/api/robots', { urls: mine.slice(0,half) });
-                for(var k1 in a.results) cache[k1] = a.results[k1];
-                var c = await post('/api/robots', { urls: mine.slice(half) });
-                for(var k2 in c.results) cache[k2] = c.results[k2];
-              }catch(e2){
-                mine.forEach(function(u){ cache[u] = 'Error: BatchFailed'; });
-                failed += mine.length;
-              }
-            }
-            done += mine.length;
-            tally();
-            setBar(0.15 + (done/totalToDo)*0.8, 'Checking robots',
-                   done + ' / ' + totalToDo + (failed ? '  ('+failed+' failed)' : ''), t0);
-          }
-        }
-        var pool = [];
-        for(var w=0; w<CONCURRENCY; w++) pool.push(worker());
-        await Promise.all(pool);
-        if(stopped) throw new Error('STOPPED');
-      }
-
-      // 4. build the workbook
-      setBar(0.97, 'Building spreadsheet', '', t0);
-      await buildWorkbook();
-      setBar(1, 'Done', '', t0);
-      $('runStatus').textContent = 'Downloaded';
-      $('doneNote').textContent =
-        'Saved sitemap_links.xlsx \u2014 ' + grand + ' URLs across ' +
-        sheets.length + ' sheet' + (sheets.length===1?'':'s') + '. ' +
-        'Results are cached, so running again only re-checks new URLs.';
-      show($('doneNote'));
-
-    }catch(err){
-      if(err.message === 'STOPPED'){
-        $('runStatus').textContent = 'Stopped';
-        showErr($('runErr'), 'Stopped. Progress is cached \u2014 press Run audit to resume.');
-      }else{
-        $('runStatus').textContent = '';
-        showErr($('runErr'), err.message);
-      }
-    }finally{
-      running = false;
-      $('runBtn').disabled = false;
-      hide($('stopBtn'));
-    }
-  });
-
-  function setBar(frac, label, detail, t0){
-    $('barFill').style.width = Math.min(100, Math.round(frac*100)) + '%';
-    $('runStatus').textContent = label;
-    var secs = Math.round((Date.now()-t0)/1000);
-    var mm = Math.floor(secs/60), ss = secs%60;
-    $('progLeft').textContent = detail || '\u00a0';
-    $('progRight').textContent = mm + 'm ' + (ss<10?'0':'') + ss + 's';
-  }
-
-  function tally(){
-    var f=0,x=0,u=0;
-    for(var k in cache){
-      var st = derive(cache[k]);
-      if(st[0]==='Unknown') u++;
-      else if(st[0]==='Noindex' || st[1]==='Nofollow') x++;
-      else f++;
-    }
-    $('tFollow').textContent = f;
-    $('tFlag').textContent = x;
-    $('tUnknown').textContent = u;
-  }
-
-  // ---------------------------------------------------------------- xlsx
-  var HDR = ['URL','Robots','Index Status','Follow Status','Keyword',
-             'Last Modified','Change Freq','Priority'];
-  var WIDTHS = [80,30,16,16,45,22,14,10];
-
-  async function buildWorkbook(){
-    if(typeof ExcelJS === 'undefined'){ return downloadCsv(); }
-
-    var wb = new ExcelJS.Workbook();
-    sheets.forEach(function(sh){
-      var ws = wb.addWorksheet(sh.name);
-      ws.columns = HDR.map(function(h,i){ return { header:h, width:WIDTHS[i] }; });
-
-      ws.getRow(1).eachCell(function(c){
-        c.font = { name:'Arial', bold:true, size:11, color:{argb:'FFFFFFFF'} };
-        c.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FF2F5496'} };
-        c.alignment = { horizontal:'center', vertical:'middle' };
-      });
-
-      sh.rows.forEach(function(r){
-        var d = cache[r.url] || 'Not checked';
-        var st = derive(d);
-        var row = ws.addRow([r.url, d, st[0], st[1], r.keyword,
-                             r.lastmod, r.changefreq, r.priority]);
-        [2,3,4].forEach(function(ci){
-          var cell = row.getCell(ci);
-          var low = String(cell.value||'').toLowerCase();
-          if(low.indexOf('nofollow')>=0 || low.indexOf('noindex')>=0 || /\bnone\b/.test(low))
-            cell.font = { name:'Arial', size:10, bold:true, color:{argb:'FFC00000'} };
-          else if(/^(error|http |unknown|not checked)/.test(low))
-            cell.font = { name:'Arial', size:10, italic:true, color:{argb:'FF808080'} };
-          else cell.font = { name:'Arial', size:10 };
+      try {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url })
         });
-        [1,5,6,7,8].forEach(function(ci){
-          row.getCell(ci).font = { name:'Arial', size:10 };
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to fetch");
+
+        data.categories.forEach(cat => {
+          list.innerHTML += `
+            <label>
+              <input type="checkbox" value="${cat.type}" checked>
+              <b>${cat.type}</b> - ${cat.count} sitemaps (${cat.langs})
+            </label>
+          `;
         });
-      });
 
-      ws.views = [{ state:'frozen', ySplit:1 }];
-      ws.autoFilter = { from:{row:1,column:1},
-                        to:{row:sh.rows.length+1, column:HDR.length} };
-    });
+        container.style.display = "block";
+        statusEl.innerHTML = `✅ Found ${data.categories.length} categories!`;
+      } catch (error) {
+        statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+      } finally {
+        analyzeBtn.disabled = false;
+      }
+    }
 
-    var buf = await wb.xlsx.writeBuffer();
-    save(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),
-         'sitemap_links.xlsx');
-  }
+    async function scrapeSitemap() {
+      const url = document.getElementById('sitemapUrl').value;
+      const statusEl = document.getElementById('status');
+      const scrapeBtn = document.getElementById('scrapeBtn');
+      const checkedBoxes = document.querySelectorAll('#categoriesList input:checked');
+      const selectedCategories = Array.from(checkedBoxes).map(cb => cb.value);
+      const selectedFields = getSelectedFields();
 
-  function downloadCsv(){
-    var lines = [];
-    sheets.forEach(function(sh){
-      lines.push('# ' + sh.name);
-      lines.push(HDR.join(','));
-      sh.rows.forEach(function(r){
-        var d = cache[r.url] || 'Not checked', st = derive(d);
-        lines.push([r.url,d,st[0],st[1],r.keyword,r.lastmod,r.changefreq,r.priority]
-          .map(function(v){ return '"' + String(v==null?'':v).replace(/"/g,'""') + '"'; })
-          .join(','));
-      });
-      lines.push('');
-    });
-    save(new Blob([lines.join('\n')], {type:'text/csv'}), 'sitemap_links.csv');
-    showErr($('runErr'),
-      'The spreadsheet library did not load, so a CSV was saved instead. '+
-      'It has the same columns, without the colour coding.');
-  }
+      if (selectedCategories.length === 0) return alert("Select at least one category");
 
-  function save(blob, name){
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = name;
-    document.body.appendChild(a); a.click();
-    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1500);
-  }
+      statusEl.innerHTML = selectedFields.length
+        ? "⏳ Opening every URL to read page data. This can take a few minutes."
+        : "⏳ Scraping URLs... This might take a minute.";
+      scrapeBtn.disabled = true;
 
-  $('sitemap').addEventListener('keydown', function(e){
-    if(e.key === 'Enter') $('analyzeBtn').click();
-  });
-})();
-</script>
+      try {
+        const res = await fetch('/api/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: url,
+            categories: selectedCategories,
+            fields: selectedFields
+          })
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.detail || "Scraping failed");
+        }
+
+        const limitHit = res.headers.get('X-Page-Limit-Hit') === '1';
+        const pagesFetched = res.headers.get('X-Pages-Fetched');
+
+        const blob = await res.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = "sitemap_links.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(downloadUrl);
+
+        statusEl.innerHTML = limitHit
+          ? `✅ Excel downloaded. Page data stops after ${pagesFetched} URLs — rerun with fewer categories to cover the rest.`
+          : "✅ Excel file downloaded successfully!";
+      } catch (error) {
+        statusEl.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+      } finally {
+        scrapeBtn.disabled = false;
+      }
+    }
+  </script>
 </body>
 </html>
