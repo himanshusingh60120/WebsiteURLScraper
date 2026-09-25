@@ -28,8 +28,12 @@ FIELD_LABELS = {
     "meta_title": "Meta Title",
     "meta_description": "Meta Description",
     "h1": "H1",
+    "h2": "H2",
+    "h3": "H3",
 }
-FIELD_ORDER = ["meta_title", "meta_description", "h1"]
+FIELD_ORDER = ["meta_title", "meta_description", "h1", "h2", "h3"]
+HEADING_FIELDS = ("h1", "h2", "h3")
+EXCEL_CELL_LIMIT = 32_000  # Excel caps a cell at 32,767 characters
 SITEMAP_COLUMNS = ["Last Modified", "Change Freq", "Priority"]
 
 COL_WIDTHS = {
@@ -37,6 +41,8 @@ COL_WIDTHS = {
     "Meta Title": 55,
     "Meta Description": 75,
     "H1": 45,
+    "H2": 60,
+    "H3": 60,
     "Status": 10,
     "Last Modified": 22,
     "Change Freq": 14,
@@ -143,7 +149,7 @@ def get_categories(sitemap_url):
 
 
 # ---------------------------------------------------------------------------
-# Page-level extraction (meta title / meta description / H1)
+# Page-level extraction (meta title / meta description / H1 / H2 / H3)
 # ---------------------------------------------------------------------------
 
 def clean(text):
@@ -181,9 +187,11 @@ def parse_page_fields(html_bytes, fields):
             desc = first_value(doc.xpath("//meta[@property='og:description']/@content"))
         data["Meta Description"] = desc
 
-    if "h1" in fields:
-        headings = [clean(h.text_content()) for h in doc.xpath("//h1")]
-        data["H1"] = " | ".join(h for h in headings if h)
+    for tag in HEADING_FIELDS:
+        if tag in fields:
+            headings = [clean(h.text_content()) for h in doc.xpath(f"//{tag}")]
+            joined = " | ".join(h for h in headings if h)
+            data[FIELD_LABELS[tag]] = joined[:EXCEL_CELL_LIMIT]
 
     return data
 
