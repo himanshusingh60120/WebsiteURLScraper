@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sitemap Scraper</title>
+    <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
@@ -72,6 +73,28 @@
     const BATCH_SIZE = 60; // URLs sent per /api/pages call
     let stopRequested = false;
 
+    // ---- Excel layout (mirrors the old server-side export) ----
+    const FIELD_LABELS = {
+        meta_title: "Meta Title",
+        meta_description: "Meta Description",
+        h1: "H1", h2: "H2", h3: "H3", h4: "H4", h5: "H5", h6: "H6",
+    };
+    const FIELD_ORDER = Object.keys(FIELD_LABELS);
+    const SITEMAP_COLUMNS = ["Last Modified", "Change Freq", "Priority"];
+    const COL_WIDTHS = {
+        "URL": 70, "Meta Title": 55, "Meta Description": 75,
+        "H1": 45, "H2": 60, "H3": 60, "H4": 60, "H5": 60, "H6": 60,
+        "Status": 10, "Last Modified": 22, "Change Freq": 14, "Priority": 10,
+    };
+    const EXCEL_CELL_LIMIT = 32000;
+
+    const HEADER_FONT = { name: "Arial", bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
+    const HEADER_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F5496" } };
+    const HEADER_ALIGN = { horizontal: "center", vertical: "middle" };
+    const CELL_FONT = { name: "Arial", size: 10 };
+    const CELL_ALIGN = { vertical: "top" };
+    const CELL_BORDER = { bottom: { style: "thin", color: { argb: "FFD9D9D9" } } };
+
     document.querySelectorAll('.toggle').forEach(btn => {
         btn.addEventListener('click', () => btn.classList.toggle('active'));
     });
@@ -110,6 +133,56 @@
             throw new Error(detail);
         }
         return res;
+    }
+
+    function buildHeaders(fields) {
+        const ordered = FIELD_ORDER.filter(f => fields.includes(f));
+        const headers = ["URL", ...ordered.map(f => FIELD_LABELS[f])];
+        if (ordered.length) headers.push("Status");
+        return headers.concat(SITEMAP_COLUMNS);
+    }
+
+    // Build the .xlsx in the browser, so nothing large is uploaded to the server.
+    async function buildWorkbook(sheets, fields) {
+        const headers = buildHeaders(fields);
+        const wb = new ExcelJS.Workbook();
+        const used = new Set();
+
+        for (const sheet of sheets) {
+            const base = (sheet.name || "Sheet").replace(/[\\\/*?:\[\]]/g, "-").slice(0, 31) || "Sheet";
+            let name = base, suffix = 2;
+            while (used.has(name.toLowerCase())) {
+                name = `${base.slice(0, 27)} (${suffix})`;
+                suffix++;
+            }
+            used.add(name.toLowerCase());
+
+            const ws = wb.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
+            ws.columns = headers.map(h => ({ header: h, key: h, width: COL_WIDTHS[h] || 20 }));
+
+            ws.getRow(1).eachCell(c => {
+                c.font = HEADER_FONT; c.fill = HEADER_FILL; c.alignment = HEADER_ALIGN;
+            });
+
+            for (const r of sheet.rows) {
+                const values = {};
+                headers.forEach(h => {
+                    values[h] = r[h] == null ? "" : String(r[h]).slice(0, EXCEL_CELL_LIMIT);
+                });
+                const row = ws.addRow(values);
+                row.eachCell({ includeEmpty: true }, c => {
+                    c.font = CELL_FONT; c.border = CELL_BORDER; c.alignment = CELL_ALIGN;
+                });
+            }
+
+            ws.autoFilter = {
+                from: { row: 1, column: 1 },
+                to: { row: sheet.rows.length + 1, column: headers.length },
+            };
+        }
+
+        if (!wb.worksheets.length) throw new Error("Nothing to export");
+        return wb.xlsx.writeBuffer();
     }
 
     async function analyzeSitemap() {
@@ -171,6 +244,9 @@
         const fields = getSelectedFields();
 
         if (categories.length === 0) return alert("Select at least one category");
+        if (typeof ExcelJS === "undefined") {
+            return setStatus("Error: Excel library failed to load. Check your connection and refresh.", true);
+        }
 
         stopRequested = false;
         scrapeBtn.disabled = true;
@@ -206,10 +282,12 @@
                 }));
             }
 
-            // Step 3 — build and download the workbook.
+            // Step 3 — build the workbook right here in the browser and download it.
             setStatus("⏳ Building the Excel file...");
-            const exportRes = await postJson('/api/export', { sheets, fields });
-            const blob = await exportRes.blob();
+            const buffer = await buildWorkbook(sheets, fields);
+            const blob = new Blob([buffer], {
+                type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            });
             const downloadUrl = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = downloadUrl;
