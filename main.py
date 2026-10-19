@@ -16,7 +16,6 @@ app = FastAPI()
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SitemapScraper/1.0)"}
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-
 LANG_NAMES = {
     "en": "English", "fr": "French", "de": "German", "es": "Spanish",
     "zh": "Chinese", "ko": "Korean", "pt": "Portuguese", "ru": "Russian",
@@ -30,9 +29,13 @@ FIELD_LABELS = {
     "h1": "H1",
     "h2": "H2",
     "h3": "H3",
+    "h4": "H4",
+    "h5": "H5",
+    "h6": "H6",
 }
-FIELD_ORDER = ["meta_title", "meta_description", "h1", "h2", "h3"]
-HEADING_FIELDS = ("h1", "h2", "h3")
+FIELD_ORDER = ["meta_title", "meta_description", "h1", "h2", "h3", "h4", "h5", "h6"]
+HEADING_FIELDS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
 EXCEL_CELL_LIMIT = 32_000  # Excel caps a cell at 32,767 characters
 SITEMAP_COLUMNS = ["Last Modified", "Change Freq", "Priority"]
 
@@ -43,16 +46,19 @@ COL_WIDTHS = {
     "H1": 45,
     "H2": 60,
     "H3": 60,
+    "H4": 60,
+    "H5": 60,
+    "H6": 60,
     "Status": 10,
     "Last Modified": 22,
     "Change Freq": 14,
     "Priority": 10,
 }
 
-MAX_WORKERS = 20          # parallel page fetches inside one batch
-PAGE_TIMEOUT = 10         # seconds per page
+MAX_WORKERS = 20         # parallel page fetches inside one batch
+PAGE_TIMEOUT = 10        # seconds per page
 MAX_HTML_BYTES = 300_000  # stop reading a page after this much HTML
-MAX_BATCH = 120           # hard cap on URLs accepted per /api/pages call
+MAX_BATCH = 120          # hard cap on URLs accepted per /api/pages call
 
 SESSION = requests.Session()
 SESSION.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=MAX_WORKERS))
@@ -149,7 +155,7 @@ def get_categories(sitemap_url):
 
 
 # ---------------------------------------------------------------------------
-# Page-level extraction (meta title / meta description / H1 / H2 / H3)
+# Page-level extraction (meta title / meta description / H1–H6)
 # ---------------------------------------------------------------------------
 
 def clean(text):
@@ -199,18 +205,15 @@ def parse_page_fields(html_bytes, fields):
 def fetch_page(url, fields):
     result = {FIELD_LABELS[f]: "" for f in fields}
     result["Status"] = ""
-
     if not url:
         result["Status"] = "No URL"
         return result
-
     try:
         resp = SESSION.get(
             url, headers=HEADERS, timeout=PAGE_TIMEOUT,
             stream=True, allow_redirects=True
         )
         result["Status"] = str(resp.status_code)
-
         content_type = resp.headers.get("Content-Type", "").lower()
         if resp.status_code != 200 or "html" not in content_type:
             resp.close()
@@ -226,7 +229,6 @@ def fetch_page(url, fields):
         result.update(parse_page_fields(bytes(buffer), fields))
     except Exception as exc:
         result["Status"] = f"Error: {type(exc).__name__}"
-
     return result
 
 
@@ -300,7 +302,6 @@ def urls(req: UrlsRequest):
     try:
         all_categories = get_categories(req.url)
         collected = {}
-
         for stype in req.categories:
             for item in all_categories.get(stype, []):
                 key = (stype, item["lang"])
@@ -328,13 +329,11 @@ def pages(req: PagesRequest):
         raise HTTPException(status_code=400, detail="No page fields requested")
     if len(req.urls) > MAX_BATCH:
         raise HTTPException(status_code=400, detail=f"Batch too large (max {MAX_BATCH})")
-
     if not req.urls:
         return {"results": []}
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(req.urls))) as pool:
         results = list(pool.map(lambda u: fetch_page(u, fields), req.urls))
-
     return {"results": results}
 
 
@@ -363,7 +362,6 @@ def export(req: ExportRequest):
 
         output = BytesIO()
         wb.save(output)
-
         return Response(
             content=output.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
