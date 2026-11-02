@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sitemap Scraper</title>
+    <title>Website URL Scraper</title>
     <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        input[type="text"] { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        input[type="text"], textarea { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        textarea { font-family: Consolas, monospace; font-size: 13px; resize: vertical; margin-bottom: 4px; }
         button { background: #2F5496; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 10px; }
         button:hover { background: #1f3a6b; }
         button:disabled { background: #ccc; cursor: not-allowed; }
@@ -16,6 +17,16 @@
         label { display: block; margin-bottom: 8px; cursor: pointer; }
         #status { margin-top: 15px; font-weight: bold; color: #333; text-align: center; }
         .error { color: red; }
+        .muted { font-size: 13px; color: #666; }
+
+        .tabs { display: flex; border-bottom: 2px solid #eee; margin-bottom: 12px; }
+        button.tab {
+            width: auto; margin: 0 0 -2px; padding: 10px 16px; font-size: 15px;
+            background: none; color: #555; border-radius: 0; border-bottom: 2px solid transparent;
+        }
+        button.tab:hover { background: #f3f5fa; }
+        button.tab.active { color: #2F5496; border-bottom-color: #2F5496; font-weight: bold; }
+
         .field-group { margin: 20px 0; border: 1px solid #eee; padding: 15px; border-radius: 4px; }
         .field-group p { margin: 0 0 4px; font-weight: bold; }
         .field-group .hint { margin: 0 0 12px; font-weight: normal; font-size: 13px; color: #666; }
@@ -27,7 +38,8 @@
         button.toggle:hover { background: #eef2f9; }
         button.toggle.active { background: #2F5496; color: white; }
         button.toggle.active::before { content: "✓ "; }
-        button.toggle:focus-visible { outline: 2px solid #1f3a6b; outline-offset: 2px; }
+        button.toggle:focus-visible, button.tab:focus-visible { outline: 2px solid #1f3a6b; outline-offset: 2px; }
+
         #stopBtn { background: #8a1c1c; display: none; }
         #stopBtn:hover { background: #6d1616; }
         .bar { height: 6px; background: #eee; border-radius: 3px; margin-top: 12px; overflow: hidden; display: none; }
@@ -37,31 +49,45 @@
 <body>
 
 <div class="card">
-    <h2>🔗 Sitemap Link Scraper</h2>
-    <p>Paste an XML sitemap URL to extract and categorize links into an Excel file.</p>
+    <h2>🔗 Website URL Scraper</h2>
 
-    <input type="text" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" />
-    <button id="analyzeBtn" onclick="analyzeSitemap()">Analyze Sitemap</button>
+    <div class="tabs" role="tablist">
+        <button type="button" class="tab active" data-mode="sitemap" role="tab" aria-selected="true">From sitemap</button>
+        <button type="button" class="tab" data-mode="list" role="tab" aria-selected="false">Paste URLs</button>
+    </div>
 
-    <div id="categoryContainer" style="display: none;">
-        <div class="checkbox-group" id="categoriesList"></div>
+    <!-- Sitemap mode -->
+    <div id="sitemapMode">
+        <p>Paste an XML sitemap URL to extract and categorize links into an Excel file.</p>
+        <input type="text" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" />
+        <button id="analyzeBtn" onclick="analyzeSitemap()">Analyze Sitemap</button>
+        <div class="checkbox-group" id="categoriesList" style="display: none;"></div>
+    </div>
 
+    <!-- Pasted URL mode -->
+    <div id="listMode" style="display: none;">
+        <p>Paste the page URLs you want data for, one per line.</p>
+        <textarea id="urlList" rows="8" placeholder="https://example.com/page-1&#10;https://example.com/page-2"></textarea>
+        <div class="muted" id="urlCount">0 URLs</div>
+    </div>
+
+    <!-- Shared: what to collect + run -->
+    <div id="runPanel" style="display: none;">
         <div class="field-group">
             <p>Add page data</p>
-            <p class="hint">Tap what you need. Each one opens every URL, so large sitemaps take a few minutes.</p>
+            <p class="hint">Tap what you need. Each one opens every URL, so long lists take a few minutes.</p>
             <div class="toggle-row">
                 <button type="button" class="toggle" data-field="meta_title">Meta Title</button>
                 <button type="button" class="toggle" data-field="meta_description">Meta Description</button>
                 <button type="button" class="toggle" data-field="h1">H1</button>
                 <button type="button" class="toggle" data-field="h2">H2</button>
                 <button type="button" class="toggle" data-field="h3">H3</button>
-                <button type="button" class="toggle" data-field="h4">H4</button>
-                <button type="button" class="toggle" data-field="h5">H5</button>
-                <button type="button" class="toggle" data-field="h6">H6</button>
+                <button type="button" class="toggle" data-field="inlinks"
+                        title="Internal links inside the main content (header, nav, sidebar and footer excluded)">Inlinks in Content</button>
             </div>
         </div>
 
-        <button id="scrapeBtn" onclick="scrapeSitemap()">Scrape &amp; Download Excel</button>
+        <button id="scrapeBtn" onclick="run()">Scrape &amp; Download Excel</button>
         <button id="stopBtn" onclick="stopRun()">Stop and download what's done</button>
         <div class="bar" id="bar"><span id="barFill"></span></div>
     </div>
@@ -70,55 +96,110 @@
 </div>
 
 <script>
-    const BATCH_SIZE = 60; // URLs sent per /api/pages call
+    const BATCH_SIZE = 60;           // URLs sent per /api/pages call
+    const EXCEL_CELL_LIMIT = 32000;
+    const EXCEL_MAX_ROWS = 1048575;  // + header row
+
+    const FIELD_COLUMNS = {
+        meta_title: ['Meta Title'],
+        meta_description: ['Meta Description'],
+        h1: ['H1'], h2: ['H2'], h3: ['H3'],
+        inlinks: ['Inlinks Count', 'Inlinks'],
+    };
+    const FIELD_ORDER = Object.keys(FIELD_COLUMNS);
+    const SITEMAP_COLUMNS = ['Last Modified', 'Change Freq', 'Priority'];
+    const INLINK_COLUMNS = ['Source URL', 'Anchor Text', 'Inlink URL', 'Rel'];
+    const COL_WIDTHS = {
+        'URL': 70, 'Meta Title': 55, 'Meta Description': 75, 'H1': 45, 'H2': 60, 'H3': 60,
+        'Inlinks Count': 14, 'Inlinks': 80, 'Status': 10,
+        'Last Modified': 22, 'Change Freq': 14, 'Priority': 10,
+        'Source URL': 70, 'Anchor Text': 45, 'Inlink URL': 70, 'Rel': 14,
+    };
+    const HEADER_FONT = { name: 'Arial', bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2F5496' } };
+    const HEADER_ALIGN = { horizontal: 'center', vertical: 'middle' };
+    const CELL_STYLE = {
+        font: { name: 'Arial', size: 10 },
+        alignment: { vertical: 'top' },
+        border: { bottom: { style: 'thin', color: { argb: 'FFD9D9D9' } } },
+    };
+
+    let mode = 'sitemap';
+    let analyzed = false;
+    let running = false;
     let stopRequested = false;
 
-    // ---- Excel layout (mirrors the old server-side export) ----
-    const FIELD_LABELS = {
-        meta_title: "Meta Title",
-        meta_description: "Meta Description",
-        h1: "H1", h2: "H2", h3: "H3", h4: "H4", h5: "H5", h6: "H6",
-    };
-    const FIELD_ORDER = Object.keys(FIELD_LABELS);
-    const SITEMAP_COLUMNS = ["Last Modified", "Change Freq", "Priority"];
-    const COL_WIDTHS = {
-        "URL": 70, "Meta Title": 55, "Meta Description": 75,
-        "H1": 45, "H2": 60, "H3": 60, "H4": 60, "H5": 60, "H6": 60,
-        "Status": 10, "Last Modified": 22, "Change Freq": 14, "Priority": 10,
-    };
-    const EXCEL_CELL_LIMIT = 32000;
+    const $ = id => document.getElementById(id);
 
-    const HEADER_FONT = { name: "Arial", bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
-    const HEADER_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F5496" } };
-    const HEADER_ALIGN = { horizontal: "center", vertical: "middle" };
-    const CELL_FONT = { name: "Arial", size: 10 };
-    const CELL_ALIGN = { vertical: "top" };
-    const CELL_BORDER = { bottom: { style: "thin", color: { argb: "FFD9D9D9" } } };
+    // ---------- UI wiring ----------
 
     document.querySelectorAll('.toggle').forEach(btn => {
         btn.addEventListener('click', () => btn.classList.toggle('active'));
     });
+
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => setMode(tab.dataset.mode));
+    });
+
+    $('urlList').addEventListener('input', () => {
+        const n = parseUrlList($('urlList').value).length;
+        $('urlCount').textContent = `${n.toLocaleString()} URL${n === 1 ? '' : 's'}`;
+    });
+
+    function setMode(next) {
+        if (running || next === mode) return;
+        mode = next;
+        document.querySelectorAll('.tab').forEach(t => {
+            const on = t.dataset.mode === mode;
+            t.classList.toggle('active', on);
+            t.setAttribute('aria-selected', on);
+        });
+        $('sitemapMode').style.display = mode === 'sitemap' ? 'block' : 'none';
+        $('listMode').style.display = mode === 'list' ? 'block' : 'none';
+        setStatus('');
+        updateRunPanel();
+    }
+
+    function updateRunPanel() {
+        $('runPanel').style.display = (mode === 'list' || analyzed) ? 'block' : 'none';
+        $('scrapeBtn').textContent = mode === 'list'
+            ? 'Get Page Data & Download Excel'
+            : 'Scrape & Download Excel';
+    }
 
     function getSelectedFields() {
         return Array.from(document.querySelectorAll('.toggle.active')).map(b => b.dataset.field);
     }
 
     function setStatus(html, isError) {
-        document.getElementById('status').innerHTML =
-            isError ? `<span class="error">❌ ${html}</span>` : html;
+        $('status').innerHTML = isError ? `<span class="error">❌ ${html}</span>` : html;
     }
 
     function setProgress(done, total) {
-        const bar = document.getElementById('bar');
-        const fill = document.getElementById('barFill');
-        if (!total) { bar.style.display = 'none'; return; }
-        bar.style.display = 'block';
-        fill.style.width = `${Math.round((done / total) * 100)}%`;
+        if (!total) { $('bar').style.display = 'none'; return; }
+        $('bar').style.display = 'block';
+        $('barFill').style.width = `${Math.round((done / total) * 100)}%`;
     }
 
     function stopRun() {
         stopRequested = true;
         setStatus("⏹ Finishing the current batch...");
+    }
+
+    // Accepts one URL per line (also tolerates spaces/tabs). Adds https:// to bare domains.
+    function parseUrlList(text) {
+        const seen = new Set();
+        const out = [];
+        for (let token of text.split(/\s+/)) {
+            token = token.trim().replace(/^["'<]+|["'>,;]+$/g, '');
+            if (!token) continue;
+            if (!/^https?:\/\//i.test(token)) {
+                if (!/^[\w-]+(\.[\w-]+)+/.test(token)) continue;
+                token = 'https://' + token;
+            }
+            if (!seen.has(token)) { seen.add(token); out.push(token); }
+        }
+        return out;
     }
 
     async function postJson(path, body) {
@@ -135,176 +216,207 @@
         return res;
     }
 
-    function buildHeaders(fields) {
-        const ordered = FIELD_ORDER.filter(f => fields.includes(f));
-        const headers = ["URL", ...ordered.map(f => FIELD_LABELS[f])];
-        if (ordered.length) headers.push("Status");
-        return headers.concat(SITEMAP_COLUMNS);
-    }
-
-    // Build the .xlsx in the browser, so nothing large is uploaded to the server.
-    async function buildWorkbook(sheets, fields) {
-        const headers = buildHeaders(fields);
-        const wb = new ExcelJS.Workbook();
-        const used = new Set();
-
-        for (const sheet of sheets) {
-            const base = (sheet.name || "Sheet").replace(/[\\\/*?:\[\]]/g, "-").slice(0, 31) || "Sheet";
-            let name = base, suffix = 2;
-            while (used.has(name.toLowerCase())) {
-                name = `${base.slice(0, 27)} (${suffix})`;
-                suffix++;
-            }
-            used.add(name.toLowerCase());
-
-            const ws = wb.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
-            ws.columns = headers.map(h => ({ header: h, key: h, width: COL_WIDTHS[h] || 20 }));
-
-            ws.getRow(1).eachCell(c => {
-                c.font = HEADER_FONT; c.fill = HEADER_FILL; c.alignment = HEADER_ALIGN;
-            });
-
-            for (const r of sheet.rows) {
-                const values = {};
-                headers.forEach(h => {
-                    values[h] = r[h] == null ? "" : String(r[h]).slice(0, EXCEL_CELL_LIMIT);
-                });
-                const row = ws.addRow(values);
-                row.eachCell({ includeEmpty: true }, c => {
-                    c.font = CELL_FONT; c.border = CELL_BORDER; c.alignment = CELL_ALIGN;
-                });
-            }
-
-            ws.autoFilter = {
-                from: { row: 1, column: 1 },
-                to: { row: sheet.rows.length + 1, column: headers.length },
-            };
-        }
-
-        if (!wb.worksheets.length) throw new Error("Nothing to export");
-        return wb.xlsx.writeBuffer();
-    }
+    // ---------- Sitemap mode ----------
 
     async function analyzeSitemap() {
-        const url = document.getElementById('sitemapUrl').value.trim();
-        const analyzeBtn = document.getElementById('analyzeBtn');
-        const container = document.getElementById('categoryContainer');
-        const list = document.getElementById('categoriesList');
-
+        const url = $('sitemapUrl').value.trim();
+        const list = $('categoriesList');
         if (!url) return alert("Please enter a URL");
 
         setStatus("⏳ Fetching sitemap...");
-        analyzeBtn.disabled = true;
-        container.style.display = "none";
+        $('analyzeBtn').disabled = true;
+        analyzed = false;
+        list.style.display = 'none';
         list.innerHTML = "";
+        updateRunPanel();
 
         try {
             const res = await postJson('/api/analyze', { url });
             const data = await res.json();
-
             data.categories.forEach(cat => {
                 list.innerHTML += `
                     <label>
                         <input type="checkbox" value="${cat.type}" checked>
                         <b>${cat.type}</b> - ${cat.count} sitemaps (${cat.langs})
-                    </label>
-                `;
+                    </label>`;
             });
-
-            container.style.display = "block";
+            list.style.display = 'block';
+            analyzed = true;
+            updateRunPanel();
             setStatus(`✅ Found ${data.categories.length} categories!`);
         } catch (error) {
             setStatus(`Error: ${error.message}`, true);
         } finally {
-            analyzeBtn.disabled = false;
+            $('analyzeBtn').disabled = false;
         }
     }
 
-    // Fetch page data for one batch, with a single retry before giving up.
+    // ---------- Page data (shared) ----------
+
+    // One batch, with a single retry before giving up.
     async function fetchBatch(urls, fields) {
         for (let attempt = 0; attempt < 2; attempt++) {
             try {
                 const res = await postJson('/api/pages', { urls, fields });
                 return (await res.json()).results;
             } catch (error) {
-                if (attempt === 1) {
-                    return urls.map(() => ({ Status: "Error: batch failed" }));
-                }
+                if (attempt === 1) return urls.map(() => ({ Status: "Error: batch failed" }));
                 await new Promise(r => setTimeout(r, 1500));
             }
         }
     }
 
-    async function scrapeSitemap() {
-        const url = document.getElementById('sitemapUrl').value.trim();
-        const scrapeBtn = document.getElementById('scrapeBtn');
-        const stopBtn = document.getElementById('stopBtn');
-        const checkedBoxes = document.querySelectorAll('#categoriesList input:checked');
-        const categories = Array.from(checkedBoxes).map(cb => cb.value);
-        const fields = getSelectedFields();
+    async function fillPageData(sheets, total, fields) {
+        $('stopBtn').style.display = 'block';
+        let done = 0;
+        outer:
+        for (const sheet of sheets) {
+            for (let i = 0; i < sheet.rows.length; i += BATCH_SIZE) {
+                if (stopRequested) break outer;
+                const slice = sheet.rows.slice(i, i + BATCH_SIZE);
+                const results = await fetchBatch(slice.map(r => r.URL), fields);
+                slice.forEach((row, n) => Object.assign(row, results[n]));
+                done += slice.length;
+                setProgress(done, total);
+                setStatus(`⏳ Reading pages… ${done.toLocaleString()} of ${total.toLocaleString()}`);
+            }
+        }
+        // Mark anything we never got to, so blanks are never ambiguous.
+        sheets.forEach(sheet => sheet.rows.forEach(row => {
+            if (!row.Status) row.Status = "Not fetched (stopped)";
+        }));
+    }
 
-        if (categories.length === 0) return alert("Select at least one category");
-        if (typeof ExcelJS === "undefined") {
-            return setStatus("Error: Excel library failed to load. Check your connection and refresh.", true);
+    // ---------- Excel (built in the browser) ----------
+
+    function buildHeaders(fields, includeSitemapCols) {
+        const headers = ['URL'];
+        FIELD_ORDER.forEach(f => { if (fields.includes(f)) headers.push(...FIELD_COLUMNS[f]); });
+        if (fields.length) headers.push('Status');
+        if (includeSitemapCols) headers.push(...SITEMAP_COLUMNS);
+        return headers;
+    }
+
+    function uniqueSheetName(name, used) {
+        const base = (name || 'Sheet').replace(/[\\\/*?:\[\]]/g, '-').slice(0, 31) || 'Sheet';
+        let candidate = base, n = 2;
+        while (used.has(candidate.toLowerCase())) candidate = `${base.slice(0, 27)} (${n++})`;
+        used.add(candidate.toLowerCase());
+        return candidate;
+    }
+
+    function toCell(v) {
+        if (v === undefined || v === null) return '';
+        if (typeof v === 'string' && v.length > EXCEL_CELL_LIMIT) return v.slice(0, EXCEL_CELL_LIMIT);
+        return v;
+    }
+
+    function addSheet(wb, name, headers, rows) {
+        const ws = wb.addWorksheet(name, { views: [{ state: 'frozen', ySplit: 1 }] });
+        ws.columns = headers.map(h => ({ header: h, key: h, width: COL_WIDTHS[h] || 20, style: CELL_STYLE }));
+        ws.getRow(1).eachCell(c => { c.font = HEADER_FONT; c.fill = HEADER_FILL; c.alignment = HEADER_ALIGN; });
+        rows.forEach(r => ws.addRow(headers.map(h => toCell(r[h]))));
+        ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: rows.length + 1, column: headers.length } };
+    }
+
+    function buildWorkbook(sheets, fields, includeSitemapCols) {
+        const wb = new ExcelJS.Workbook();
+        const headers = buildHeaders(fields, includeSitemapCols);
+        const used = new Set();
+        let truncated = false;
+
+        sheets.forEach(s => addSheet(wb, uniqueSheetName(s.name, used), headers, s.rows));
+
+        if (fields.includes('inlinks')) {
+            const linkRows = [];
+            outer:
+            for (const s of sheets) {
+                for (const row of s.rows) {
+                    for (const link of (row._inlinks || [])) {
+                        if (linkRows.length >= EXCEL_MAX_ROWS) { truncated = true; break outer; }
+                        linkRows.push({
+                            'Source URL': row.URL,
+                            'Anchor Text': link.anchor,
+                            'Inlink URL': link.url,
+                            'Rel': link.rel,
+                        });
+                    }
+                }
+            }
+            addSheet(wb, uniqueSheetName('Content Inlinks', used), INLINK_COLUMNS, linkRows);
+        }
+        return { wb, truncated };
+    }
+
+    async function downloadWorkbook(wb, filename) {
+        const buffer = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buffer], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        });
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(href);
+    }
+
+    // ---------- Run ----------
+
+    async function run() {
+        const runMode = mode;
+        const fields = getSelectedFields();
+        let sheets, total, sitemapUrl, categories;
+
+        if (runMode === 'list') {
+            const urls = parseUrlList($('urlList').value);
+            if (!urls.length) return alert("Paste at least one URL");
+            if (!fields.length) return alert("Pick at least one thing to collect, e.g. Meta Title or Inlinks in Content");
+            sheets = [{ name: 'Pages', rows: urls.map(u => ({ URL: u })) }];
+            total = urls.length;
+        } else {
+            sitemapUrl = $('sitemapUrl').value.trim();
+            categories = Array.from(document.querySelectorAll('#categoriesList input:checked')).map(cb => cb.value);
+            if (!categories.length) return alert("Select at least one category");
         }
 
+        if (typeof ExcelJS === 'undefined') {
+            return setStatus("Couldn't load the Excel library. Check your connection and reload the page.", true);
+        }
+
+        running = true;
         stopRequested = false;
-        scrapeBtn.disabled = true;
-        setStatus("⏳ Reading sitemaps...");
+        $('scrapeBtn').disabled = true;
+        $('analyzeBtn').disabled = true;
 
         try {
-            // Step 1 — collect every URL. Fast, no page fetching.
-            const urlRes = await postJson('/api/urls', { url, categories });
-            const { sheets, total } = await urlRes.json();
-            if (!total) throw new Error("No URLs found in the selected categories");
-
-            // Step 2 — walk the URLs in batches, filling in page data as we go.
-            if (fields.length) {
-                stopBtn.style.display = 'block';
-                let done = 0;
-
-                for (const sheet of sheets) {
-                    for (let i = 0; i < sheet.rows.length; i += BATCH_SIZE) {
-                        if (stopRequested) break;
-                        const slice = sheet.rows.slice(i, i + BATCH_SIZE);
-                        const results = await fetchBatch(slice.map(r => r.URL), fields);
-                        slice.forEach((row, n) => Object.assign(row, results[n]));
-                        done += slice.length;
-                        setProgress(done, total);
-                        setStatus(`⏳ Reading pages… ${done.toLocaleString()} of ${total.toLocaleString()}`);
-                    }
-                    if (stopRequested) break;
-                }
-
-                // Mark anything we never got to, so blanks are never ambiguous.
-                sheets.forEach(sheet => sheet.rows.forEach(row => {
-                    if (!row.Status) row.Status = "Not fetched (stopped)";
-                }));
+            if (runMode === 'sitemap') {
+                setStatus("⏳ Reading sitemaps...");
+                const res = await postJson('/api/urls', { url: sitemapUrl, categories });
+                ({ sheets, total } = await res.json());
+                if (!total) throw new Error("No URLs found in the selected categories");
             }
 
-            // Step 3 — build the workbook right here in the browser and download it.
-            setStatus("⏳ Building the Excel file...");
-            const buffer = await buildWorkbook(sheets, fields);
-            const blob = new Blob([buffer], {
-                type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            });
-            const downloadUrl = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = "sitemap_links.xlsx";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(downloadUrl);
+            if (fields.length) await fillPageData(sheets, total, fields);
 
-            setStatus(stopRequested
+            setStatus("⏳ Building the Excel file...");
+            const { wb, truncated } = buildWorkbook(sheets, fields, runMode === 'sitemap');
+            await downloadWorkbook(wb, runMode === 'list' ? 'page_data.xlsx' : 'sitemap_links.xlsx');
+
+            let msg = stopRequested
                 ? "✅ Excel downloaded with the rows completed before you stopped."
-                : `✅ Excel downloaded — ${total.toLocaleString()} URLs.`);
+                : `✅ Excel downloaded — ${total.toLocaleString()} URLs.`;
+            if (truncated) msg += " The Content Inlinks sheet hit Excel's row limit and was cut off.";
+            setStatus(msg);
         } catch (error) {
             setStatus(`Error: ${error.message}`, true);
         } finally {
-            scrapeBtn.disabled = false;
-            stopBtn.style.display = 'none';
+            running = false;
+            $('scrapeBtn').disabled = false;
+            $('analyzeBtn').disabled = false;
+            $('stopBtn').style.display = 'none';
             setProgress(0, 0);
         }
     }
